@@ -2,7 +2,30 @@
 
 A full-stack, production-ready AI assistant application that integrates multiple communication channels (Chat, WhatsApp, Gmail) with intelligent task management and automation. Built with modern technologies: React + Vite frontend, FastAPI backend, Firebase authentication, Supabase database, and LangChain AI agents.
 
-**Live Demo:** Coming Soon | **Documentation:** See sections below
+**Status:** ✅ Production Ready | **Version:** 2.0.0 | **Last Updated:** April 2026
+
+---
+
+## 📋 Quick Navigation
+
+**Getting Started:**
+- [🚀 Quick Start (5 minutes)](#quick-start)
+- [📖 Detailed Setup Guide](#detailed-setup)
+- [🐛 Troubleshooting](#troubleshooting)
+
+**Documentation:**
+- [🎯 Project Overview](#overview)
+- [✨ Features](#key-features)
+- [🛠 Tech Stack](#technology-stack)
+- [🏗 Architecture](#project-architecture)
+- [📁 Project Structure](#project-structure)
+
+**Development:**
+- [🔌 API Documentation](#api-documentation)
+- [🗄 Database Schema](#database-schema)
+- [🤖 AI Agents](#ai-agents)
+- [🚀 Deployment](#deployment)
+- [🔐 Security](#security)
 
 ---
 
@@ -21,7 +44,8 @@ A full-stack, production-ready AI assistant application that integrates multiple
 11. [Deployment](#deployment)
 12. [Security](#security)
 13. [Troubleshooting](#troubleshooting)
-14. [Contributing](#contributing)
+14. [Known Limitations](#known-limitations)
+15. [Contributing](#contributing)
 
 ---
 
@@ -35,13 +59,22 @@ A full-stack, production-ready AI assistant application that integrates multiple
 - **Automation:** Automatic task creation from messages, email categorization, priority detection
 - **Real-time Processing:** Async-first architecture for zero-latency operations
 
-### Use Cases
+### What You Can Do
 
 - 📱 **WhatsApp Integration:** Send messages like "Remind me to call mom tomorrow" and it creates a task
 - 📧 **Gmail Integration:** Automatically categorize emails, detect priority, create tasks from important messages
 - 💬 **Chat Interface:** Talk to AI assistant for task management, information retrieval, and automation
 - 📊 **Dashboard:** View all tasks, messages, and notifications in one place
 - 🔄 **Workflow Automation:** Trigger actions based on messages from any channel
+- 🤖 **AI-Powered Analysis:** Sentiment analysis, intent recognition, and smart task extraction
+- 🔐 **Secure & Private:** Firebase authentication with row-level database security
+
+### Who Should Use This
+
+- **Developers** building AI-powered applications
+- **Teams** needing multi-channel communication management
+- **Businesses** automating task creation and email processing
+- **Individuals** wanting a personal AI assistant
 
 ---
 
@@ -242,48 +275,141 @@ Backend (FastAPI)
 ### Prerequisites
 - Node.js 18+
 - Python 3.10+
-- Docker & Docker Compose (optional)
-- Firebase Project
-- Supabase Project
-- API Keys (Google Generative AI, OpenAI, or Cohere)
+- Firebase Project (free tier works)
+- Supabase Project (free tier works)
+- At least one AI API key (Google Generative AI, OpenAI, or Cohere)
 
-### 5-Minute Setup (Docker)
+### Option 1: Docker (Recommended for Quick Testing)
 
 ```bash
 # 1. Clone repository
 git clone https://github.com/yourusername/CoolieAssistant.git
 cd CoolieAssistant
 
-# 2. Copy environment file
+# 2. Copy and configure environment
 cp .env.example .env
+# Edit .env with your credentials (see Detailed Setup)
 
-# 3. Edit .env with your credentials
-# Required:
-# - VITE_FIREBASE_API_KEY
-# - VITE_FIREBASE_PROJECT_ID
-# - VITE_FIREBASE_APP_ID
-# - SUPABASE_URL
-# - SUPABASE_SERVICE_ROLE_KEY
-# - GOOGLE_AI_API_KEY (or OPENAI_API_KEY)
-
-# 4. Start all services
+# 3. Start all services
 docker-compose up -d
 
-# 5. Access the app
+# 4. Access the app
 # Frontend: http://localhost
 # Backend API: http://localhost:8000
 # API Docs: http://localhost:8000/docs
 ```
 
-### Manual Setup (Local Development)
+### Option 2: Manual Setup (Recommended for Development)
 
-See [Detailed Setup](#detailed-setup) section below.
+**Terminal 1 - Backend:**
+```bash
+cd backend
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -r requirements.txt
+python -m uvicorn app.main:app --reload --port 8000
+```
+
+**Terminal 2 - Frontend:**
+```bash
+cd client
+npm install
+npm run dev
+```
+
+**Access:**
+- Frontend: http://localhost:5173
+- Backend: http://localhost:8000
+- API Docs: http://localhost:8000/docs
+
+### Verify Setup
+
+1. **Backend Health:** `curl http://localhost:8000/health`
+   - Should return: `{"status": "ok"}`
+
+2. **Frontend:** Open http://localhost:5173
+   - Should see login page
+
+3. **API Docs:** Open http://localhost:8000/docs
+   - Should see interactive Swagger UI
 
 ---
 
 ## 📖 Detailed Setup
 
-### Backend Setup (FastAPI)
+### Step 1: Clone Repository
+
+```bash
+git clone https://github.com/yourusername/CoolieAssistant.git
+cd CoolieAssistant
+```
+
+### Step 2: Configure Environment Variables
+
+Copy the example file:
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your credentials:
+
+```env
+# ============================================
+# REQUIRED - Must be configured
+# ============================================
+
+# Firebase (Get from Firebase Console)
+VITE_FIREBASE_API_KEY=AIzaSy...
+VITE_FIREBASE_PROJECT_ID=your-project-id
+VITE_FIREBASE_APP_ID=1:123456:web:abc...
+
+# Supabase (Get from Supabase Dashboard)
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=eyJhbGc...
+
+# AI Provider (Choose one or more)
+# Option 1: Google Generative AI (Recommended - Free tier available)
+GOOGLE_AI_API_KEY=AIzaSy...
+
+# Option 2: OpenAI
+# OPENAI_API_KEY=sk-...
+
+# Option 3: Cohere
+# COHERE_API_KEY=...
+
+# ============================================
+# OPTIONAL - For specific features
+# ============================================
+
+# Gmail Integration (Optional)
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+GOOGLE_OAUTH_REDIRECT_URI=http://localhost:8000/api/gmail/oauth/callback
+
+# YouTube Detection (Optional)
+YOUTUBE_API_KEY=...
+
+# Frontend API URL (Usually auto-detected)
+VITE_API_URL=http://localhost:8000
+
+# ============================================
+# BACKEND ONLY
+# ============================================
+
+# Server Configuration
+HOST=0.0.0.0
+PORT=8000
+ENV=development
+DEBUG=true
+
+# Session Security (Change in production!)
+SESSION_SECRET_KEY=your-secret-key-change-in-production
+
+# CORS Origins (Comma-separated)
+CORS_ORIGINS=["http://localhost:5173","http://localhost:8000"]
+```
+
+### Step 3: Backend Setup
 
 ```bash
 cd backend
@@ -291,31 +417,34 @@ cd backend
 # Create virtual environment
 python -m venv venv
 
-# Activate (Windows)
+# Activate virtual environment
+# On Windows:
 venv\Scripts\activate
-
-# Activate (macOS/Linux)
+# On macOS/Linux:
 source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Copy environment file
-cp .env.example .env
-
-# Edit .env with your credentials
-nano .env  # or use your editor
-
 # Run development server
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-**Backend runs at:** http://localhost:8000
-- **API Docs (Swagger):** http://localhost:8000/docs
-- **Alternative Docs (ReDoc):** http://localhost:8000/redoc
-- **Health Check:** http://localhost:8000/health
+**Expected Output:**
+```
+INFO:     Uvicorn running on http://0.0.0.0:8000
+INFO:     Application startup complete
+```
 
-### Frontend Setup (React)
+**Backend URLs:**
+- API: http://localhost:8000
+- Swagger Docs: http://localhost:8000/docs
+- ReDoc: http://localhost:8000/redoc
+- Health Check: http://localhost:8000/health
+
+### Step 4: Frontend Setup
+
+Open a new terminal:
 
 ```bash
 cd client
@@ -323,67 +452,54 @@ cd client
 # Install dependencies
 npm install
 
-# Copy environment file
-cp .env.example .env
-
-# Edit .env with backend URL
-# VITE_API_URL=http://localhost:8000
-# VITE_FIREBASE_API_KEY=your_key
-# etc.
-
 # Run development server
 npm run dev
 ```
 
-**Frontend runs at:** http://localhost:5173
+**Expected Output:**
+```
+  VITE v7.1.9  ready in 234 ms
 
-### Environment Variables
-
-#### Backend (.env)
-```env
-# Server
-HOST=0.0.0.0
-PORT=8000
-ENV=development
-DEBUG=true
-
-# Firebase
-FIREBASE_ADMIN_CREDENTIALS_PATH=/path/to/serviceAccount.json
-FIREBASE_PROJECT_ID=your-project-id
-
-# Supabase (REQUIRED)
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
-
-# AI Providers (choose one or more)
-EMBEDDING_PROVIDER=google  # cohere, google, openai
-GOOGLE_AI_API_KEY=your-google-key
-OPENAI_API_KEY=sk-...
-COHERE_API_KEY=...
-
-# Google OAuth (optional)
-GOOGLE_CLIENT_ID=...
-GOOGLE_CLIENT_SECRET=...
-GOOGLE_OAUTH_REDIRECT_URI=http://localhost:8000/api/gmail/oauth/callback
-
-# YouTube (optional)
-YOUTUBE_API_KEY=...
-
-# Session
-SESSION_SECRET_KEY=your-secret-key-change-in-production
-
-# CORS
-CORS_ORIGINS=["http://localhost:5173","http://localhost:8000"]
+  ➜  Local:   http://localhost:5173/
+  ➜  press h to show help
 ```
 
-#### Frontend (.env)
-```env
-VITE_API_URL=http://localhost:8000
-VITE_FIREBASE_API_KEY=your-api-key
-VITE_FIREBASE_PROJECT_ID=your-project-id
-VITE_FIREBASE_APP_ID=your-app-id
-VITE_N8N_WEBHOOK_URL=http://localhost:5678/webhook  # optional
+**Frontend URL:**
+- App: http://localhost:5173
+
+### Step 5: Database Setup
+
+The database schema is automatically created by Supabase. If you need to manually initialize:
+
+1. Go to Supabase Dashboard
+2. Open SQL Editor
+3. Run the SQL from `backend/DATABASE_SCHEMA.md`
+
+Or use the provided script:
+```bash
+# This is optional - Supabase handles it automatically
+psql -h your-supabase-host -U postgres -d postgres -f backend/supabase_init.sql
 ```
+
+### Step 6: Verify Everything Works
+
+1. **Backend Health:**
+   ```bash
+   curl http://localhost:8000/health
+   # Should return: {"status": "ok"}
+   ```
+
+2. **Frontend Access:**
+   - Open http://localhost:5173
+   - Should see login page
+
+3. **API Documentation:**
+   - Open http://localhost:8000/docs
+   - Try a test endpoint
+
+4. **Create Account:**
+   - Sign up with email on login page
+   - Should redirect to dashboard
 
 ---
 
@@ -781,28 +897,57 @@ gcloud run deploy coolie-frontend \
 
 **Backend won't start**
 ```bash
-# Check Python version
-python --version  # Should be 3.10+
+# Check Python version (must be 3.10+)
+python --version
 
-# Check .env file
-cat .env  # Verify all required variables
+# Check if port 8000 is in use
+# Windows:
+netstat -ano | findstr :8000
+# macOS/Linux:
+lsof -i :8000
 
-# Check Firebase credentials
-ls -la /path/to/serviceAccount.json
+# Kill process using port (if needed)
+# Windows:
+taskkill /PID <PID> /F
+# macOS/Linux:
+kill -9 <PID>
 
-# Check port availability
-lsof -i :8000  # macOS/Linux
-netstat -ano | findstr :8000  # Windows
+# Try different port
+python -m uvicorn app.main:app --reload --port 8001
 ```
 
-**Database connection error**
+**ModuleNotFoundError: No module named 'fastapi'**
 ```bash
-# Verify Supabase credentials
+# Make sure virtual environment is activated
+# Windows:
+venv\Scripts\activate
+# macOS/Linux:
+source venv/bin/activate
+
+# Reinstall dependencies
+pip install -r requirements.txt
+```
+
+**Supabase connection error**
+```bash
+# Verify credentials
 echo $SUPABASE_URL
 echo $SUPABASE_SERVICE_ROLE_KEY
 
 # Test connection
-python -c "from supabase import create_client; create_client('$SUPABASE_URL', '$SUPABASE_SERVICE_ROLE_KEY')"
+python -c "from supabase import create_client; print('OK')"
+
+# Check .env file exists and has values
+cat .env | grep SUPABASE
+```
+
+**Firebase authentication fails**
+```bash
+# Check Firebase credentials are set
+echo $FIREBASE_PROJECT_ID
+
+# Verify Firebase project is active in console
+# Check security rules allow your app
 ```
 
 ### Frontend Issues
@@ -812,11 +957,11 @@ python -c "from supabase import create_client; create_client('$SUPABASE_URL', '$
 # Check backend is running
 curl http://localhost:8000/health
 
-# Check VITE_API_URL
+# Check VITE_API_URL is correct
 echo $VITE_API_URL
 
-# Check browser console for CORS errors
-# Verify backend CORS_ORIGINS includes frontend URL
+# Check browser console (F12) for CORS errors
+# Verify backend CORS_ORIGINS includes http://localhost:5173
 ```
 
 **Firebase not initializing**
@@ -826,19 +971,134 @@ echo $VITE_FIREBASE_API_KEY
 echo $VITE_FIREBASE_PROJECT_ID
 echo $VITE_FIREBASE_APP_ID
 
-# Check browser console for errors
+# Check browser console (F12) for errors
 # Verify Firebase project is active
 ```
 
-### Common Errors
+**npm install fails**
+```bash
+# Clear npm cache
+npm cache clean --force
 
-| Error | Solution |
-|-------|----------|
-| `ModuleNotFoundError: No module named 'fastapi'` | Run `pip install -r requirements.txt` |
-| `CORS error` | Check backend `CORS_ORIGINS` setting |
-| `Firebase not initialized` | Verify `VITE_FIREBASE_*` environment variables |
-| `Supabase connection failed` | Check `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` |
-| `Port already in use` | Change port or kill process using it |
+# Delete node_modules and package-lock.json
+rm -rf node_modules package-lock.json
+
+# Reinstall
+npm install
+```
+
+**Port 5173 already in use**
+```bash
+# Find process using port
+# Windows:
+netstat -ano | findstr :5173
+# macOS/Linux:
+lsof -i :5173
+
+# Kill process or use different port
+npm run dev -- --port 5174
+```
+
+### Common Errors & Solutions
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `CORS error in browser` | Backend CORS not configured | Check `CORS_ORIGINS` in `.env` |
+| `Firebase not initialized` | Missing Firebase credentials | Check `VITE_FIREBASE_*` in `.env` |
+| `Supabase connection failed` | Wrong credentials or offline | Verify `SUPABASE_URL` and key |
+| `Port already in use` | Another process using port | Kill process or use different port |
+| `Module not found` | Dependencies not installed | Run `pip install -r requirements.txt` |
+| `Cannot find module '@/components'` | Path alias not working | Check `vite.config.ts` and `tsconfig.json` |
+| `API returns 401 Unauthorized` | Firebase token invalid | Check token in browser DevTools |
+| `Database query fails` | Supabase not initialized | Run database schema setup |
+
+### Debug Mode
+
+**Enable verbose logging:**
+
+Backend:
+```bash
+# Set DEBUG=true in .env
+DEBUG=true
+python -m uvicorn app.main:app --reload --log-level debug
+```
+
+Frontend:
+```bash
+# Check browser console (F12)
+# Look for network requests in Network tab
+# Check Application tab for stored tokens
+```
+
+### Getting Help
+
+1. **Check logs:**
+   - Backend terminal for API errors
+   - Browser console (F12) for frontend errors
+   - Browser Network tab for API calls
+
+2. **Verify configuration:**
+   - Check `.env` file has all required variables
+   - Check Firebase project is active
+   - Check Supabase project is accessible
+
+3. **Test endpoints:**
+   - Use http://localhost:8000/docs to test API
+   - Use curl to test backend connectivity
+   - Check browser DevTools for frontend issues
+
+4. **Common fixes:**
+   - Restart backend and frontend
+   - Clear browser cache (Ctrl+Shift+Delete)
+   - Reinstall dependencies
+   - Check internet connection
+
+---
+
+## ⚠️ Known Limitations
+
+### Current Implementation Status
+
+**Fully Implemented:**
+- ✅ Chat interface with AI responses
+- ✅ Task creation and management
+- ✅ Firebase authentication
+- ✅ Supabase database integration
+- ✅ User preferences and settings
+- ✅ Notification system
+- ✅ Theme switching (dark/light mode)
+- ✅ Sentiment analysis
+- ✅ Task extraction from text
+
+**Partially Implemented:**
+- ⚠️ **WhatsApp Integration** - Webhook receiving works, but sending messages requires Twilio/Vonage setup (TODO in code)
+- ⚠️ **Gmail Integration** - Webhook receiving works, but OAuth flow and email fetching need completion (TODO in code)
+- ⚠️ **YouTube Detection** - Link detection works, but full video processing not implemented
+
+**Not Yet Implemented:**
+- ❌ Real-time WebSocket messaging
+- ❌ Email notifications
+- ❌ Rate limiting on API endpoints
+- ❌ Advanced caching layer (Redis)
+- ❌ Automated testing suite
+- ❌ CI/CD pipeline
+- ❌ Mobile app
+- ❌ Multi-language support
+
+### What This Means
+
+- **For Development:** The project is suitable for learning and development. Some features are stubbed out with TODO comments.
+- **For Production:** Core features (chat, tasks, auth) are production-ready. External integrations (WhatsApp, Gmail) need additional setup.
+- **For Deployment:** Docker setup is ready, but you'll need to configure external services (Firebase, Supabase, AI APIs).
+
+### Roadmap
+
+**Next Phase:**
+1. Complete WhatsApp send implementation
+2. Complete Gmail OAuth flow
+3. Add rate limiting
+4. Implement WebSocket support
+5. Add test suite
 
 ---
 
