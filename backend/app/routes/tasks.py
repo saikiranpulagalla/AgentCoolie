@@ -1,0 +1,187 @@
+"""
+Task management routes.
+"""
+
+from fastapi import APIRouter, Depends, HTTPException, status, Header
+from app.models import Task, TaskCreate, TaskUpdate
+from app.services import supabase_service, firebase_service
+from app.agents import TaskAgent
+import logging
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api/tasks", tags=["tasks"])
+
+
+def get_current_user(authorization: str = Header(None)) -> str:
+    """Extract user ID from Firebase token in Authorization header."""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing authorization header")
+    
+    try:
+        # Extract bearer token
+        parts = authorization.split(" ")
+        if len(parts) != 2 or parts[0].lower() != "bearer":
+            raise ValueError("Invalid authorization header format")
+        token = parts[1]
+        
+        # Verify with Firebase and extract user ID
+        decoded = firebase_service.verify_id_token(token)
+        return decoded.get("uid")
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+
+@router.post("", response_model=Task)
+async def create_task(
+    task_request: TaskCreate,
+    user_id: str = Depends(get_current_user),
+) -> dict:
+    """
+    Create a new task.
+
+    Args:
+        task_request: Task creation request
+        user_id: User ID
+
+    Returns:
+        Created task
+    """
+    try:
+        task = await supabase_service.create_task(
+            user_id=user_id,
+            title=task_request.title,
+            description=task_request.description,
+            task_type=task_request.type.value,
+            priority=task_request.priority.value,
+            due_date=task_request.due_date.isoformat() if task_request.due_date else None,
+        )
+        return task
+    except Exception as e:
+        logger.error(f"Failed to create task: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/from-text")
+async def create_task_from_text(
+    request: dict,
+    user_id: str = Depends(get_current_user),
+) -> dict:
+    """
+    Create task from natural language text.
+
+    Args:
+        request: {"text": "string"}
+        user_id: User ID
+
+    Returns:
+        Created task details
+    """
+    try:
+        agent = TaskAgent(user_id)
+        text = request.get("text", "")
+
+        # Extract task details from text
+        task_details = await agent.create_from_text(text)
+
+        # Save task to database
+        if task_details.get("status") == "success":
+            task_data = task_details.get("task", {})
+            saved_task = await supabase_service.create_task(
+                user_id=user_id,
+                title=task_data.get("title", "Untitled"),
+                description=task_data.get("description"),
+                task_type=task_data.get("type", "general"),
+                priority=task_data.get("priority", "medium"),
+                due_date=task_data.get("due_date"),
+            )
+            return saved_task
+
+        return {"status": "error", "error": "Failed to extract task details"}
+    except Exception as e:
+        logger.error(f"Failed to create task from text: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("", response_model=list[Task])
+async def get_tasks(user_id: str = Depends(get_current_user)) -> list[dict]:
+    """
+    Get all tasks for user.
+
+    Args:
+        user_id: User ID
+
+    Returns:
+        List of tasks
+    """
+    try:
+        tasks = await supabase_service.get_tasks(user_id)
+        return tasks
+    except Exception as e:
+        logger.error(f"Failed to fetch tasks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{task_id}", response_model=Task)
+async def get_task(
+    task_id: str,
+    user_id: str = Depends(get_current_user),
+) -> dict:
+    """Get a specific task."""
+    try:
+        tasks = await supabase_service.get_tasks(user_id)
+        task = next((t for t in tasks if t.get("id") == task_id), None)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        return task
+    except Exception as e:
+        logger.error(f"Failed to fetch task: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/{task_id}", response_model=Task)
+async def update_task(
+    task_id: str,
+    task_update: TaskUpdate,
+    user_id: str = Depends(get_current_user),
+) -> dict:
+    """
+    Update a task.
+
+    Args:
+        task_id: Task ID
+        task_update: Updates to apply
+        user_id: User ID
+
+    Returns:
+        Updated task
+    """
+    try:
+        update_data = task_update.dict(exclude_unset=True)
+        if "type" in update_data:
+            update_data["type"] = update_data["type"].value
+        if "priority" in update_data:
+            update_data["priority"] = update_data["priority"].value
+        if "due_date" in update_data and update_data["due_date"]:
+            update_data["due_date"] = update_data["due_date"].isoformat()
+
+        task = await supabase_service.update_task(task_id, **update_data)
+        return task
+    except Exception as e:
+        logger.error(f"Failed to update task: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/{task_id}")
+async def delete_task(
+    task_id: str,
+    user_id: str = Depends(get_current_user),
+) -> dict:
+    """Delete a task."""
+    try:
+        success = await supabase_service.delete_task(task_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Task not found")
+        return {"status": "success", "message": "Task deleted"}
+    except Exception as e:
+        logger.error(f"Failed to delete task: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

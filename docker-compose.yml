@@ -1,0 +1,81 @@
+version: '3.9'
+
+services:
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: coolie-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - ENV=production
+      - HOST=0.0.0.0
+      - PORT=8000
+      - FIREBASE_ADMIN_CREDENTIALS_PATH=/app/.firebase/serviceAccount.json
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - GOOGLE_AI_API_KEY=${GOOGLE_AI_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - COHERE_API_KEY=${COHERE_API_KEY}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOOGLE_OAUTH_REDIRECT_URI=${GOOGLE_OAUTH_REDIRECT_URI}
+      - YOUTUBE_API_KEY=${YOUTUBE_API_KEY}
+      - SESSION_SECRET_KEY=${SESSION_SECRET_KEY}
+    volumes:
+      - ./.firebase:/app/.firebase:ro
+    depends_on:
+      - postgres
+    networks:
+      - coolie-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # React Frontend
+  frontend:
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+      args:
+        VITE_API_URL: http://backend:8000
+        VITE_FIREBASE_API_KEY: ${VITE_FIREBASE_API_KEY}
+        VITE_FIREBASE_PROJECT_ID: ${VITE_FIREBASE_PROJECT_ID}
+        VITE_FIREBASE_APP_ID: ${VITE_FIREBASE_APP_ID}
+    container_name: coolie-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - coolie-network
+    restart: unless-stopped
+
+  # PostgreSQL Database (Optional - for development)
+  # Supabase is recommended for production
+  postgres:
+    image: postgres:15-alpine
+    container_name: coolie-postgres
+    environment:
+      POSTGRES_USER: coolie
+      POSTGRES_PASSWORD: coolie_dev_password
+      POSTGRES_DB: coolie_assistant
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - coolie-network
+    restart: unless-stopped
+
+networks:
+  coolie-network:
+    driver: bridge
+
+volumes:
+  postgres_data:

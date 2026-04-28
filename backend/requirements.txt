@@ -1,0 +1,39 @@
+# Python 3.10+ - Flexible versions for compatibility
+# FastAPI and ASGI
+fastapi>=0.100
+uvicorn[standard]>=0.23
+pydantic>=2.0
+pydantic-settings>=2.0
+
+# Firebase
+firebase-admin>=6.0
+
+# Supabase
+supabase>=2.0
+
+# AI/ML - using flexible versions for compatibility
+langchain
+langchain-openai
+langchain-google-genai
+google-generativeai
+cohere
+openai
+
+# Google APIs
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
+
+# Web scraping and utilities
+playwright
+requests
+aiohttp
+
+# Database
+sqlalchemy
+psycopg2-binary
+asyncpg
+
+# Utils
+python-dotenv
+python-multipart
