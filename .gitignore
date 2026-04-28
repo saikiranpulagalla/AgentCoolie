@@ -1,0 +1,54 @@
+node_modules
+dist
+.DS_Store
+server/public
+vite.config.ts.*
+*.tar.gz
+.local
+
+# Environment variables - keep locally, don't commit
+.env
+.env.local
+.env.*.local
+client/src/.env
+backend/.env
+
+# Dependencies
+.venv
+venv/
+backend/.venv
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Cache
+.cache
+.pytest_cache
+__pycache__/
+*.pyc
+
+# Firebase
+.firebase/
+.firebaserc
+
+# Testing
+coverage/
+.nyc_output/
