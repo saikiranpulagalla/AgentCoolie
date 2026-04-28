@@ -28,10 +28,16 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_ROLE_KEY: str
 
     # AI Providers
-    EMBEDDING_PROVIDER: str = "cohere"  # cohere, google, openai
+    EMBEDDING_PROVIDER: str = "google"  # cohere, google, openai
     COHERE_API_KEY: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
     GOOGLE_AI_API_KEY: Optional[str] = None
+    
+    # AI Models (configurable)
+    GEMINI_MODEL: str = "gemini-1.5-flash"  # gemini-1.5-flash, gemini-1.5-pro, gemini-2.0-flash
+    GEMINI_VISION_MODEL: str = "gemini-1.5-flash"  # Vision model for image analysis
+    OPENAI_MODEL: str = "gpt-4o-mini"  # gpt-4o, gpt-4o-mini, gpt-4-turbo
+    COHERE_MODEL: str = "command-r-plus"  # command-r-plus, command-r
 
     # Google OAuth
     GOOGLE_CLIENT_ID: Optional[str] = None

@@ -114,13 +114,15 @@ class GeminiService:
         """Initialize Gemini service."""
         self.client = None
         self.vision_model = None
+        self.model_name = settings.GEMINI_MODEL
+        self.vision_model_name = settings.GEMINI_VISION_MODEL
         
         try:
             import google.generativeai as genai
             genai.configure(api_key=settings.GOOGLE_AI_API_KEY)
-            self.client = genai.GenerativeModel("gemini-pro")
-            self.vision_model = genai.GenerativeModel("gemini-pro-vision")
-            logger.info("Gemini service initialized")
+            self.client = genai.GenerativeModel(self.model_name)
+            self.vision_model = genai.GenerativeModel(self.vision_model_name)
+            logger.info(f"Gemini service initialized with model: {self.model_name}")
         except ImportError:
             logger.warning("Google Generative AI not installed - Gemini will not work")
         except Exception as e:
@@ -139,7 +141,7 @@ class GeminiService:
         """
         try:
             import google.generativeai as genai
-            model = genai.GenerativeModel("gemini-pro")
+            model = genai.GenerativeModel(self.model_name)
             full_prompt = f"{prompt}\n\nText: {text}" if prompt else text
             response = model.generate_content(full_prompt)
             return response.text
@@ -164,7 +166,7 @@ class GeminiService:
             import io
             import base64
 
-            model = genai.GenerativeModel("gemini-pro-vision")
+            model = genai.GenerativeModel(self.vision_model_name)
             image_data = base64.b64decode(image_base64)
             image = Image.open(io.BytesIO(image_data))
 
