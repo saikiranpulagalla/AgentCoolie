@@ -64,7 +64,7 @@ async def send_message(
             user_id=user_id,
             content=response,
             role="assistant",
-            model="gemini-pro",
+            model=settings.GEMINI_MODEL,
         )
 
         return {
@@ -72,7 +72,7 @@ async def send_message(
             "content": response,
             "role": "assistant",
             "timestamp": assistant_message.get("created_at"),
-            "model": "gemini-pro",
+            "model": settings.GEMINI_MODEL,
         }
 
     except Exception as e:

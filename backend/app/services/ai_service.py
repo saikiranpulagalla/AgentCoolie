@@ -133,8 +133,8 @@ class GeminiService:
         Analyze text with Gemini.
 
         Args:
-            text: Text to analyze
-            prompt: Custom analysis prompt
+            text: Text to analyze (not used if prompt is provided)
+            prompt: Custom analysis prompt (should include the text if needed)
 
         Returns:
             Analysis result
@@ -142,7 +142,8 @@ class GeminiService:
         try:
             import google.generativeai as genai
             model = genai.GenerativeModel(self.model_name)
-            full_prompt = f"{prompt}\n\nText: {text}" if prompt else text
+            # Use the prompt as-is if provided, otherwise use the text
+            full_prompt = prompt if prompt else text
             response = model.generate_content(full_prompt)
             return response.text
         except Exception as e:
