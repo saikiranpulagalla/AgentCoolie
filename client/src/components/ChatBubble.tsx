@@ -69,8 +69,8 @@ export function ChatBubble({ message, userName, userAvatar }: ChatBubbleProps) {
             <div className="absolute inset-0 bg-gradient-to-br from-chart-2/5 to-primary/5 opacity-50" />
           )}
           <div className="relative z-10">
-            <div className="text-[15px] leading-relaxed whitespace-pre-wrap break-words">
-                {renderMessageContent(message.content)}
+            <div className="text-[15px] leading-relaxed whitespace-pre-wrap break-words prose prose-sm dark:prose-invert max-w-none">
+                {renderMarkdown(message.content)}
               </div>
             {message.attachments && message.attachments.length > 0 && (
               <div className="mt-3 grid grid-cols-1 gap-2">
@@ -103,27 +103,214 @@ export function ChatBubble({ message, userName, userAvatar }: ChatBubbleProps) {
   );
 }
 
-function renderMessageContent(content: string | undefined | null) {
+/**
+ * Parse and render markdown content with support for:
+ * - Bold: **text** or __text__
+ * - Italic: *text* or _text_
+ * - Code: `text`
+ * - Links: [text](url)
+ * - Lists: - item or * item
+ * - Headers: # Header
+ */
+function renderMarkdown(content: string | undefined | null) {
   if (!content) return null;
 
-  // simple URL regex
-  const urlRegex = /(https?:\/\/[^\s]+)/g;
-  const parts = content.split(urlRegex);
+  // Split content into lines for processing
+  const lines = content.split('\n');
+  const elements: React.ReactNode[] = [];
+  let listItems: string[] = [];
+  let inList = false;
 
-  return (
-    <>
-      {parts.map((part, i) => {
-        if (urlRegex.test(part)) {
-          // reset lastIndex in case of global regex reuse
-          urlRegex.lastIndex = 0;
-          return (
-            <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="text-sm underline text-primary">
-              {part}
-            </a>
-          );
-        }
-        return <span key={i}>{part}</span>;
-      })}
-    </>
-  );
+  lines.forEach((line, lineIndex) => {
+    const trimmedLine = line.trim();
+
+    // Handle list items
+    if (trimmedLine.startsWith('- ') || trimmedLine.startsWith('* ')) {
+      inList = true;
+      listItems.push(trimmedLine.substring(2));
+      return;
+    }
+
+    // If we were in a list and now we're not, render the list
+    if (inList && !trimmedLine.startsWith('- ') && !trimmedLine.startsWith('* ')) {
+      if (listItems.length > 0) {
+        elements.push(
+          <ul key={`list-${lineIndex}`} className="list-disc list-inside my-2 space-y-1">
+            {listItems.map((item, idx) => (
+              <li key={idx} className="text-sm">
+                {renderInlineMarkdown(item)}
+              </li>
+            ))}
+          </ul>
+        );
+        listItems = [];
+      }
+      inList = false;
+    }
+
+    // Handle headers
+    if (trimmedLine.startsWith('# ')) {
+      elements.push(
+        <h1 key={`h1-${lineIndex}`} className="text-lg font-bold my-2">
+          {renderInlineMarkdown(trimmedLine.substring(2))}
+        </h1>
+      );
+      return;
+    }
+    if (trimmedLine.startsWith('## ')) {
+      elements.push(
+        <h2 key={`h2-${lineIndex}`} className="text-base font-bold my-2">
+          {renderInlineMarkdown(trimmedLine.substring(3))}
+        </h2>
+      );
+      return;
+    }
+    if (trimmedLine.startsWith('### ')) {
+      elements.push(
+        <h3 key={`h3-${lineIndex}`} className="text-sm font-bold my-2">
+          {renderInlineMarkdown(trimmedLine.substring(4))}
+        </h3>
+      );
+      return;
+    }
+
+    // Handle empty lines
+    if (!trimmedLine) {
+      elements.push(<div key={`empty-${lineIndex}`} className="h-2" />);
+      return;
+    }
+
+    // Handle regular paragraphs
+    elements.push(
+      <p key={`p-${lineIndex}`} className="my-1">
+        {renderInlineMarkdown(trimmedLine)}
+      </p>
+    );
+  });
+
+  // Don't forget remaining list items
+  if (inList && listItems.length > 0) {
+    elements.push(
+      <ul key="final-list" className="list-disc list-inside my-2 space-y-1">
+        {listItems.map((item, idx) => (
+          <li key={idx} className="text-sm">
+            {renderInlineMarkdown(item)}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  return elements.length > 0 ? elements : content;
+}
+
+/**
+ * Render inline markdown elements (bold, italic, code, links)
+ */
+function renderInlineMarkdown(text: string): React.ReactNode {
+  if (!text) return null;
+
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+
+  // Pattern to match: **bold**, __bold__, *italic*, _italic_, `code`, [link](url)
+  const patterns = [
+    { regex: /\*\*(.+?)\*\*/g, type: 'bold' },
+    { regex: /__(.+?)__/g, type: 'bold' },
+    { regex: /\*(.+?)\*/g, type: 'italic' },
+    { regex: /_(.+?)_/g, type: 'italic' },
+    { regex: /`(.+?)`/g, type: 'code' },
+    { regex: /\[(.+?)\]\((.+?)\)/g, type: 'link' },
+    { regex: /(https?:\/\/[^\s]+)/g, type: 'url' },
+  ];
+
+  // Process all patterns
+  let result = text;
+  
+  // Handle bold
+  result = result.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  result = result.replace(/__(.+?)__/g, '<strong>$1</strong>');
+  
+  // Handle italic (but not inside bold)
+  result = result.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>');
+  result = result.replace(/(?<!_)_(?!_)(.+?)(?<!_)_(?!_)/g, '<em>$1</em>');
+  
+  // Handle code
+  result = result.replace(/`(.+?)`/g, '<code>$1</code>');
+  
+  // Handle links
+  result = result.replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  
+  // Handle URLs
+  result = result.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+
+  // Convert HTML to React elements
+  return <MarkdownHTML html={result} />;
+}
+
+/**
+ * Component to render HTML safely as React elements
+ */
+function MarkdownHTML({ html }: { html: string }) {
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+
+  // Simple regex to find HTML tags
+  const tagRegex = /<(\w+)(?:\s+[^>]*)?>([^<]*)<\/\1>|<a\s+href="([^"]+)"[^>]*>([^<]+)<\/a>/g;
+  let match;
+
+  while ((match = tagRegex.exec(html)) !== null) {
+    // Add text before the tag
+    if (match.index > lastIndex) {
+      parts.push(html.substring(lastIndex, match.index));
+    }
+
+    if (match[0].startsWith('<a')) {
+      // Link
+      parts.push(
+        <a
+          key={`link-${parts.length}`}
+          href={match[3]}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-primary underline hover:text-primary/80"
+        >
+          {match[4]}
+        </a>
+      );
+    } else if (match[1] === 'strong') {
+      // Bold
+      parts.push(
+        <strong key={`strong-${parts.length}`} className="font-bold">
+          {match[2]}
+        </strong>
+      );
+    } else if (match[1] === 'em') {
+      // Italic
+      parts.push(
+        <em key={`em-${parts.length}`} className="italic">
+          {match[2]}
+        </em>
+      );
+    } else if (match[1] === 'code') {
+      // Code
+      parts.push(
+        <code
+          key={`code-${parts.length}`}
+          className="bg-muted px-1.5 py-0.5 rounded text-sm font-mono"
+        >
+          {match[2]}
+        </code>
+      );
+    }
+
+    lastIndex = tagRegex.lastIndex;
+  }
+
+  // Add remaining text
+  if (lastIndex < html.length) {
+    parts.push(html.substring(lastIndex));
+  }
+
+  return <>{parts}</>;
 }
