@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import time
-from typing import Iterable
+from typing import Iterable, Sequence
 
 from app.core.config import settings
 from app.services.supabase_service import is_connectivity_error, supabase_service
@@ -24,7 +26,7 @@ class RuntimeConfigService:
         self._cache.clear()
 
     def _env_value(self, key: str, default: str | None = None) -> str | None:
-        value = getattr(settings, key, None)
+        value = getattr(settings, key, None) or os.getenv(key)
         return str(value) if value not in (None, "") else default
 
     async def get_secret(self, key: str, default: str | None = None) -> str | None:
@@ -62,6 +64,46 @@ class RuntimeConfigService:
         for key in keys:
             values[key] = await self.get_secret(key)
         return values
+
+    async def get_secret_list(
+        self,
+        key: str,
+        *,
+        fallback_keys: Sequence[str] = (),
+    ) -> list[str]:
+        """Read a secret value that may be JSON, comma-separated, or newline-separated."""
+        values: list[str] = []
+        raw = await self.get_secret(key)
+
+        if raw:
+            parsed_items: list[str] = []
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    parsed_items = [str(item).strip() for item in parsed]
+                elif isinstance(parsed, str):
+                    parsed_items = [parsed.strip()]
+            except json.JSONDecodeError:
+                parsed_items = [
+                    item.strip()
+                    for item in raw.replace(";", "\n").replace(",", "\n").splitlines()
+                ]
+
+            values.extend(item for item in parsed_items if item)
+
+        for fallback_key in fallback_keys:
+            fallback_value = await self.get_secret(fallback_key)
+            if fallback_value:
+                values.append(fallback_value)
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            if value in seen:
+                continue
+            seen.add(value)
+            deduped.append(value)
+        return deduped
 
 
 runtime_config_service = RuntimeConfigService()

@@ -222,7 +222,10 @@ REDIS_MEMORY_TTL_SECONDS=86400
 
 GOOGLE_AI_API_KEY=...
 GOOGLE_AI_API_FALLBACK_KEY=...
+GOOGLE_AI_API_KEYS=["...","..."]
+GEMINI_VISION_API_KEYS=["...","..."]
 GROQ_API_KEY=...
+GROQ_API_KEYS=["...","..."]
 GROQ_MODEL=llama-3.1-8b-instant
 SERPAPI_API_KEY=...
 
@@ -253,6 +256,8 @@ MAX_UPLOAD_BYTES=26214400
 ```
 
 `SESSION_SECRET_KEY` must be a strong stable value in production. Gmail OAuth state is signed with this secret and expires after `OAUTH_STATE_MAX_AGE_SECONDS`.
+
+Runtime key rotation can be managed without redeploy by writing JSON arrays to `app_secrets`, for example `GOOGLE_AI_API_KEYS`, `GEMINI_VISION_API_KEYS`, and `GROQ_API_KEYS`. Gemini vision/audio requests use the vision pool first because Groq is text-only in this app.
 Set `DEMO_BILLING_ENABLED=true` only for demo deployments where the fake checkout should activate Autopilot without real payment.
 
 ## Frontend Environment

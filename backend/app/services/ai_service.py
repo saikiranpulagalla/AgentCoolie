@@ -11,6 +11,13 @@ from app.services.tracing_service import traceable
 logger = logging.getLogger(__name__)
 
 
+def _error_summary(error: Exception) -> str:
+    text = str(error)
+    if len(text) > 180:
+        text = f"{text[:177]}..."
+    return f"{error.__class__.__name__}: {text}"
+
+
 class EmbeddingService:
     """Handle embeddings with multiple providers."""
 
@@ -100,9 +107,6 @@ class GeminiService:
         self.vision_model = None
         self.model_name = settings.GEMINI_MODEL
         self.vision_model_name = settings.GEMINI_VISION_MODEL
-        self.google_api_keys = [
-            key for key in [settings.GOOGLE_AI_API_KEY, settings.GOOGLE_AI_API_FALLBACK_KEY] if key
-        ]
         
         try:
             import google.generativeai as genai
@@ -115,16 +119,19 @@ class GeminiService:
         except Exception as e:
             logger.warning(f"Failed to initialize Gemini: {e}")
 
-    async def _google_api_keys(self) -> list[str]:
-        values = await runtime_config_service.get_secrets(
-            ["GOOGLE_AI_API_KEY", "GOOGLE_AI_API_FALLBACK_KEY"]
+    async def _google_api_keys(self, *, vision: bool = False) -> list[str]:
+        if vision:
+            keys = await runtime_config_service.get_secret_list(
+                "GEMINI_VISION_API_KEYS",
+                fallback_keys=("GOOGLE_AI_VISION_API_KEY",),
+            )
+            if keys:
+                return keys
+
+        return await runtime_config_service.get_secret_list(
+            "GOOGLE_AI_API_KEYS",
+            fallback_keys=("GOOGLE_AI_API_KEY", "GOOGLE_AI_API_FALLBACK_KEY"),
         )
-        return [
-            key for key in [
-                values.get("GOOGLE_AI_API_KEY"),
-                values.get("GOOGLE_AI_API_FALLBACK_KEY"),
-            ] if key
-        ]
 
     def _generate_with_google(self, model_name: str, content: Any, api_keys: list[str]) -> str:
         """Try configured Google API keys in order."""
@@ -142,33 +149,43 @@ class GeminiService:
                 return response.text
             except Exception as e:
                 last_error = e
-                logger.warning(f"Google AI key #{index + 1} failed: {e}")
+                logger.warning("Google AI key #%s failed: %s", index + 1, _error_summary(e))
 
         raise last_error or RuntimeError("Google AI generation failed")
 
     async def _generate_with_groq(self, prompt: str) -> str:
         """Fallback text generation through Groq's OpenAI-compatible API."""
-        groq_api_key = await runtime_config_service.get_secret("GROQ_API_KEY")
+        groq_api_keys = await runtime_config_service.get_secret_list(
+            "GROQ_API_KEYS",
+            fallback_keys=("GROQ_API_KEY",),
+        )
         groq_model = await runtime_config_service.get_secret("GROQ_MODEL", settings.GROQ_MODEL)
-        if not groq_api_key:
+        if not groq_api_keys:
             raise RuntimeError("No Groq API key configured")
 
+        last_error: Exception | None = None
         try:
             from openai import OpenAI
+        except ImportError as e:
+            raise RuntimeError("OpenAI SDK is required for Groq fallback") from e
 
-            client = OpenAI(
-                api_key=groq_api_key,
-                base_url="https://api.groq.com/openai/v1",
-            )
-            response = client.chat.completions.create(
-                model=groq_model or settings.GROQ_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
-            )
-            return response.choices[0].message.content or ""
-        except Exception as e:
-            logger.warning(f"Groq fallback failed: {e}")
-            raise
+        for index, groq_api_key in enumerate(groq_api_keys):
+            try:
+                client = OpenAI(
+                    api_key=groq_api_key,
+                    base_url="https://api.groq.com/openai/v1",
+                )
+                response = client.chat.completions.create(
+                    model=groq_model or settings.GROQ_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.7,
+                )
+                return response.choices[0].message.content or ""
+            except Exception as e:
+                last_error = e
+                logger.warning("Groq key #%s failed: %s", index + 1, _error_summary(e))
+
+        raise last_error or RuntimeError("Groq fallback failed")
 
     @traceable(name="llm.analyze_text", run_type="llm")
     async def analyze_text(self, text: str, prompt: Optional[str] = None) -> str:
@@ -219,7 +236,11 @@ class GeminiService:
             image = Image.open(io.BytesIO(image_data))
 
             full_prompt = prompt or "What's in this image?"
-            return self._generate_with_google(self.vision_model_name, [full_prompt, image], await self._google_api_keys())
+            return self._generate_with_google(
+                self.vision_model_name,
+                [full_prompt, image],
+                await self._google_api_keys(vision=True),
+            )
         except Exception as e:
             logger.error(f"Failed to analyze image: {e}")
             raise
@@ -260,7 +281,7 @@ class GeminiService:
                         "data": audio_data,
                     },
                 ],
-                await self._google_api_keys(),
+                await self._google_api_keys(vision=True),
             )
         except Exception as e:
             logger.error(f"Failed to analyze audio: {e}")
