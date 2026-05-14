@@ -13,10 +13,15 @@ export type Task = {
   id: string;
   title: string;
   description?: string;
-  // include youtube as a client-visible task type
-  type: "gmail" | "whatsapp" | "reminder" | "youtube";
+  type: "gmail" | "whatsapp" | "reminder" | "youtube" | "website";
   priority: "low" | "medium" | "high";
   completed: boolean;
+  status?: "pending" | "calling" | "sent" | "missed_offline" | "failed";
+  executionMessage?: string;
+  lastAttemptAt?: Date;
+  notifyByCall?: boolean;
+  callStatus?: string;
+  callErrorCode?: string;
   dueDate?: Date;
   createdAt: Date;
 };

@@ -12,13 +12,16 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { NotificationProvider } from "@/contexts/NotificationContext";
 import { NotificationBell } from "@/components/NotificationBell";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { ScheduledTaskRunner } from "@/components/ScheduledTaskRunner";
 import Home from "@/pages/Home";
+import Landing from "@/pages/Landing";
 import Login from "@/pages/Login";
 import Chat from "@/pages/Chat";
 import Tasks from "@/pages/Tasks";
 import Personalization from "@/pages/Personalization";
 import Settings from "@/pages/Settings";
 import Website from "@/pages/Website";
+import About from "@/pages/About";
 import NotFound from "@/pages/not-found";
 
 function ProtectedRoute({ component: Component }: { component: React.ComponentType }) {
@@ -40,11 +43,15 @@ function ProtectedRoute({ component: Component }: { component: React.ComponentTy
 }
 
 function Router() {
+  const { user } = useAuth();
+
   return (
     <Switch>
-      <Route path="/login" component={Login} />
+      <Route path="/login">
+        {user ? <Redirect to="/" /> : <Login />}
+      </Route>
       <Route path="/">
-        <ProtectedRoute component={Home} />
+        {user ? <Home /> : <Landing />}
       </Route>
       <Route path="/chat">
         <ProtectedRoute component={Chat} />
@@ -60,6 +67,9 @@ function Router() {
       </Route>
       <Route path="/website">
         <ProtectedRoute component={Website} />
+      </Route>
+      <Route path="/about">
+        <ProtectedRoute component={About} />
       </Route>
       <Route component={NotFound} />
     </Switch>
@@ -86,14 +96,23 @@ function AppContent() {
 
   return (
     <NotificationProvider>
+      <ScheduledTaskRunner />
       <SidebarProvider style={style as React.CSSProperties}>
-        <div className="flex h-screen w-full">
+        <div className="flex h-screen w-full app-surface">
           <AppSidebar />
           <div className="flex flex-col flex-1">
-            <header className="flex items-center justify-between gap-2 p-2 border-b">
-              <SidebarTrigger data-testid="button-sidebar-toggle" />
-              <NotificationBell />
-              <ThemeToggle />
+            <header className="flex items-center justify-between gap-3 p-3 border-b bg-card/70 backdrop-blur-xl">
+              <div className="flex items-center gap-3">
+                <SidebarTrigger data-testid="button-sidebar-toggle" />
+                <div className="hidden md:block">
+                  <p className="text-xs text-muted-foreground">AgentCoolie workspace</p>
+                  <p className="text-sm font-semibold">Memory, tasks, chat, and web search</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <NotificationBell />
+                <ThemeToggle />
+              </div>
             </header>
             <main className="flex-1 overflow-hidden">
               <Router />
@@ -107,6 +126,16 @@ function AppContent() {
 }
 
 
+function AuthenticatedAppProviders() {
+  const { user } = useAuth();
+
+  return (
+    <ChatProvider userId={user?.uid ?? null}>
+      <AppContent />
+    </ChatProvider>
+  );
+}
+
 
 export default function App() {
   return (
@@ -115,9 +144,7 @@ export default function App() {
         <TooltipProvider>
           <ThemeProvider>
             <AuthProvider>
-              <ChatProvider>
-                <AppContent />
-              </ChatProvider>
+              <AuthenticatedAppProviders />
             </AuthProvider>
           </ThemeProvider>
         </TooltipProvider>

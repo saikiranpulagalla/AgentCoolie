@@ -4,8 +4,15 @@ Chat routes.
 
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from app.models import ChatMessageRequest, ChatMessageResponse, ErrorResponse
-from app.services import supabase_service, firebase_service
-from app.agents import ChatAgent
+from app.services import (
+    supabase_service,
+    firebase_service,
+    chat_workflow_service,
+    redis_memory_service,
+    long_term_memory_service,
+)
+from app.core.config import settings
+from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
@@ -47,37 +54,66 @@ async def send_message(
         Assistant response
     """
     try:
-        # Create chat agent for user
-        agent = ChatAgent(user_id)
-
-        # Generate response
-        response = await agent.chat(request.content)
-
-        # Save message to database
-        user_message = await supabase_service.create_message(
+        result = await chat_workflow_service.process(
             user_id=user_id,
-            content=request.content,
-            role="user",
+            message=request.content,
+            save_messages=True,
+            conversation_id=request.conversationId or request.conversation_id,
         )
-
-        assistant_message = await supabase_service.create_message(
-            user_id=user_id,
-            content=response,
-            role="assistant",
-            model=settings.GEMINI_MODEL,
-        )
+        response = result["response"]
+        assistant_message = result.get("assistant_message") or {}
 
         return {
-            "id": assistant_message.get("id"),
+            "id": assistant_message.get("id") or "",
             "content": response,
             "role": "assistant",
-            "timestamp": assistant_message.get("created_at"),
+            "timestamp": assistant_message.get("created_at") or datetime.now().astimezone().isoformat(),
             "model": settings.GEMINI_MODEL,
         }
 
     except Exception as e:
         logger.error(f"Chat message failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/conversations/{conversation_id}/memory")
+async def delete_conversation_memory(
+    conversation_id: str,
+    user_id: str = Depends(get_current_user),
+) -> dict:
+    """Delete Redis short memory and pending tool state for one chat."""
+    try:
+        await redis_memory_service.delete_conversation(user_id, conversation_id)
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"Failed to delete chat memory {conversation_id} for {user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete chat memory")
+
+
+@router.post("/conversations/{conversation_id}/memory/exchange")
+async def append_conversation_memory(
+    conversation_id: str,
+    request: dict,
+    user_id: str = Depends(get_current_user),
+) -> dict:
+    """Record a client-handled exchange in chat-scoped Redis memory."""
+    user_message = str(request.get("userMessage") or "").strip()
+    assistant_message = str(request.get("assistantMessage") or "").strip()
+    if not user_message or not assistant_message:
+        raise HTTPException(status_code=400, detail="userMessage and assistantMessage are required")
+
+    try:
+        await redis_memory_service.append_exchange(
+            user_id,
+            user_message,
+            assistant_message,
+            conversation_id=conversation_id,
+        )
+        await long_term_memory_service.maybe_save(user_id, user_message, assistant_message)
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"Failed to append chat memory {conversation_id} for {user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to append chat memory")
 
 
 @router.get("/history", response_model=list[ChatMessageResponse])
@@ -119,6 +155,7 @@ async def analyze_sentiment(
         Sentiment analysis result
     """
     try:
+        from app.agents import ChatAgent
         agent = ChatAgent(user_id)
         analysis = await agent.analyze_sentiment(request.content)
         return analysis

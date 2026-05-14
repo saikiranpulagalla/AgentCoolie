@@ -11,6 +11,17 @@ from typing import Optional, List, Dict, Any
 logger = logging.getLogger(__name__)
 
 
+def is_connectivity_error(error: Exception) -> bool:
+    """Return True for network/DNS failures talking to Supabase."""
+    text = str(error)
+    return (
+        "getaddrinfo failed" in text
+        or "ConnectError" in text
+        or "Name or service not known" in text
+        or "nodename nor servname provided" in text
+    )
+
+
 class SupabaseService:
     """Supabase database operations."""
 
@@ -120,8 +131,91 @@ class SupabaseService:
             logger.error(f"Failed to get messages for user {user_id}: {e}")
             return []
 
+    # ============ Long-Term Memory Operations ============
+    async def create_long_term_memory(
+        self,
+        user_id: str,
+        content: str,
+        source: str = "chat",
+        importance_score: float = 0.7,
+        reason: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        normalized_content: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a long-term memory row."""
+        try:
+            def _create():
+                return self.client.table("long_term_memories").insert({
+                    "user_id": user_id,
+                    "content": content,
+                    "normalized_content": normalized_content,
+                    "source": source,
+                    "importance_score": importance_score,
+                    "reason": reason,
+                    "metadata": metadata or {},
+                }).execute()
+            response = await asyncio.to_thread(_create)
+            return response.data[0] if response.data else {}
+        except Exception as e:
+            logger.error(f"Failed to create long-term memory: {e}")
+            raise
+
+    async def find_long_term_memory_by_normalized_content(
+        self,
+        user_id: str,
+        normalized_content: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Find an existing long-term memory by normalized content."""
+        try:
+            def _get():
+                return (
+                    self.client.table("long_term_memories")
+                    .select("*")
+                    .eq("user_id", user_id)
+                    .eq("normalized_content", normalized_content)
+                    .limit(1)
+                    .execute()
+                )
+            response = await asyncio.to_thread(_get)
+            return response.data[0] if response.data else None
+        except Exception as e:
+            logger.error(f"Failed to find long-term memory duplicate: {e}")
+            if is_connectivity_error(e):
+                raise
+            return None
+
+    async def get_long_term_memories(self, user_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get the most important recent long-term memories for a user."""
+        try:
+            def _get():
+                return (
+                    self.client.table("long_term_memories")
+                    .select("*")
+                    .eq("user_id", user_id)
+                    .order("importance_score", desc=True)
+                    .order("created_at", desc=True)
+                    .limit(limit)
+                    .execute()
+                )
+            response = await asyncio.to_thread(_get)
+            return response.data
+        except Exception as e:
+            logger.error(f"Failed to get long-term memories for user {user_id}: {e}")
+            if is_connectivity_error(e):
+                raise
+            return []
+
     # ============ Task Operations ============
-    async def create_task(self, user_id: str, title: str, task_type: str, priority: str = "medium", description: Optional[str] = None, due_date: Optional[str] = None) -> Dict[str, Any]:
+    async def create_task(
+        self,
+        user_id: str,
+        title: str,
+        task_type: str,
+        priority: str = "medium",
+        description: Optional[str] = None,
+        due_date: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Create a task."""
         try:
             def _create():
@@ -133,6 +227,8 @@ class SupabaseService:
                     "priority": priority,
                     "due_date": due_date,
                     "completed": False,
+                    "status": "pending",
+                    "metadata": metadata or {},
                 }).execute()
             response = await asyncio.to_thread(_create)
             return response.data[0]
@@ -149,26 +245,103 @@ class SupabaseService:
             return response.data
         except Exception as e:
             logger.error(f"Failed to get tasks for user {user_id}: {e}")
+            if is_connectivity_error(e):
+                raise
             return []
 
-    async def update_task(self, task_id: str, **kwargs) -> Dict[str, Any]:
+    async def get_due_pending_tasks(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get due pending tasks across users for backend-side automation."""
+        try:
+            from datetime import datetime, timezone
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+
+            def _get():
+                return (
+                    self.client.table("tasks")
+                    .select("*")
+                    .eq("status", "pending")
+                    .lte("due_date", now_iso)
+                    .order("due_date", desc=False)
+                    .limit(limit)
+                    .execute()
+                )
+            response = await asyncio.to_thread(_get)
+            return response.data
+        except Exception as e:
+            logger.error(f"Failed to get due pending tasks: {e}")
+            if is_connectivity_error(e):
+                raise
+            return []
+
+    async def get_task(self, task_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+        """Get a single task scoped to a user."""
+        try:
+            def _get():
+                return (
+                    self.client.table("tasks")
+                    .select("*")
+                    .eq("id", task_id)
+                    .eq("user_id", user_id)
+                    .limit(1)
+                    .execute()
+                )
+            response = await asyncio.to_thread(_get)
+            return response.data[0] if response.data else None
+        except Exception as e:
+            logger.error(f"Failed to get task {task_id} for user {user_id}: {e}")
+            if is_connectivity_error(e):
+                raise
+            return None
+
+    async def update_task(self, task_id: str, user_id: str, **kwargs) -> Dict[str, Any]:
         """Update a task."""
         try:
             def _update():
-                return self.client.table("tasks").update(kwargs).eq("id", task_id).execute()
+                return (
+                    self.client.table("tasks")
+                    .update(kwargs)
+                    .eq("id", task_id)
+                    .eq("user_id", user_id)
+                    .execute()
+                )
             response = await asyncio.to_thread(_update)
             return response.data[0] if response.data else {}
         except Exception as e:
             logger.error(f"Failed to update task {task_id}: {e}")
             raise
 
-    async def delete_task(self, task_id: str) -> bool:
+    async def claim_pending_task(self, task_id: str, user_id: str, **kwargs) -> Dict[str, Any]:
+        """Atomically move a pending task into an in-progress state."""
+        try:
+            def _claim():
+                return (
+                    self.client.table("tasks")
+                    .update(kwargs)
+                    .eq("id", task_id)
+                    .eq("user_id", user_id)
+                    .eq("status", "pending")
+                    .execute()
+                )
+            response = await asyncio.to_thread(_claim)
+            return response.data[0] if response.data else {}
+        except Exception as e:
+            logger.error(f"Failed to claim pending task {task_id}: {e}")
+            raise
+
+    async def delete_task(self, task_id: str, user_id: str) -> bool:
         """Delete a task."""
         try:
             def _delete():
-                return self.client.table("tasks").delete().eq("id", task_id).execute()
-            await asyncio.to_thread(_delete)
-            return True
+                return (
+                    self.client.table("tasks")
+                    .delete()
+                    .eq("id", task_id)
+                    .eq("user_id", user_id)
+                    .execute()
+                )
+            response = await asyncio.to_thread(_delete)
+            return bool(response.data)
         except Exception as e:
             logger.error(f"Failed to delete task {task_id}: {e}")
             return False
@@ -178,20 +351,27 @@ class SupabaseService:
         """Get user preferences."""
         try:
             def _get():
-                return self.client.table("user_preferences").select("*").eq("user_id", user_id).single().execute()
+                return self.client.table("user_preferences").select("*").eq("user_id", user_id).limit(1).execute()
             response = await asyncio.to_thread(_get)
             return response.data[0] if response.data else None
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to get preferences for user {user_id}: {e}")
+            if is_connectivity_error(e):
+                raise
             return None
 
     async def upsert_preferences(self, user_id: str, preferences: Dict[str, Any]) -> Dict[str, Any]:
         """Create or update user preferences."""
         try:
             def _upsert():
-                return self.client.table("user_preferences").upsert({
-                    "user_id": user_id,
-                    **preferences,
-                }).execute()
+                return (
+                    self.client.table("user_preferences")
+                    .upsert({
+                        "user_id": user_id,
+                        **preferences,
+                    }, on_conflict="user_id")
+                    .execute()
+                )
             response = await asyncio.to_thread(_upsert)
             return response.data[0] if response.data else {}
         except Exception as e:
@@ -199,15 +379,49 @@ class SupabaseService:
             raise
 
     # ============ Credentials Operations ============
+    def _normalize_credentials_data(self, cred_type: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize integration credential payloads while preserving original fields."""
+        normalized = dict(data or {})
+        if cred_type != "gmail":
+            return normalized
+
+        key_map = {
+            "client_id": "gmail_client_id",
+            "clientId": "gmail_client_id",
+            "gmailClientId": "gmail_client_id",
+            "client_secret": "gmail_client_secret",
+            "clientSecret": "gmail_client_secret",
+            "gmailClientSecret": "gmail_client_secret",
+            "refresh_token": "gmail_refresh_token",
+            "refreshToken": "gmail_refresh_token",
+            "gmailRefreshToken": "gmail_refresh_token",
+            "token": "gmail_access_token",
+            "access_token": "gmail_access_token",
+            "gmailAccessToken": "gmail_access_token",
+            "apiKey": "gmail_api_key",
+            "gmailApiKey": "gmail_api_key",
+        }
+        for source, target in key_map.items():
+            value = normalized.get(source)
+            if value and not normalized.get(target):
+                normalized[target] = value
+
+        return normalized
+
     async def save_credentials(self, user_id: str, cred_type: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Save user credentials (Gmail, WhatsApp, etc.)."""
         try:
+            normalized_data = self._normalize_credentials_data(cred_type, data)
             def _save():
-                return self.client.table("user_credentials").upsert({
-                    "user_id": user_id,
-                    "type": cred_type,
-                    "data": data,
-                }).execute()
+                return (
+                    self.client.table("user_credentials")
+                    .upsert({
+                        "user_id": user_id,
+                        "type": cred_type,
+                        "data": normalized_data,
+                    }, on_conflict="user_id,type")
+                    .execute()
+                )
             response = await asyncio.to_thread(_save)
             return response.data[0] if response.data else {}
         except Exception as e:
@@ -218,11 +432,78 @@ class SupabaseService:
         """Get user credentials."""
         try:
             def _get():
-                return self.client.table("user_credentials").select("*").eq("user_id", user_id).eq("type", cred_type).single().execute()
+                return self.client.table("user_credentials").select("*").eq("user_id", user_id).eq("type", cred_type).limit(1).execute()
             response = await asyncio.to_thread(_get)
             return response.data[0] if response.data else None
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to get {cred_type} credentials for user {user_id}: {e}")
+            if is_connectivity_error(e):
+                raise
             return None
+
+    async def find_user_id_by_credential_phone(self, phone_number: str) -> Optional[str]:
+        """Find a user whose stored credential data contains this phone number."""
+        try:
+            def _get(cred_type: str):
+                return (
+                    self.client.table("user_credentials")
+                    .select("user_id,data,type")
+                    .eq("type", cred_type)
+                    .contains("data", {"phone_number": phone_number})
+                    .limit(1)
+                    .execute()
+                )
+
+            for cred_type in ("whatsapp", "call_reminder"):
+                response = await asyncio.to_thread(_get, cred_type)
+                if response.data:
+                    return response.data[0].get("user_id")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to find user by phone credential: {e}")
+            if is_connectivity_error(e):
+                raise
+            return None
+
+    async def find_credential_by_phone(self, phone_number: str, cred_type: str) -> Optional[Dict[str, Any]]:
+        """Find one credential row by provider phone number."""
+        try:
+            def _get():
+                return (
+                    self.client.table("user_credentials")
+                    .select("user_id,data,type")
+                    .eq("type", cred_type)
+                    .contains("data", {"phone_number": phone_number})
+                    .limit(1)
+                    .execute()
+                )
+
+            response = await asyncio.to_thread(_get)
+            return response.data[0] if response.data else None
+        except Exception as e:
+            logger.error(f"Failed to find {cred_type} credential by phone: {e}")
+            if is_connectivity_error(e):
+                raise
+            return None
+
+    async def delete_credentials(self, user_id: str, cred_type: str) -> bool:
+        """Delete user credentials."""
+        try:
+            def _delete():
+                return (
+                    self.client.table("user_credentials")
+                    .delete()
+                    .eq("user_id", user_id)
+                    .eq("type", cred_type)
+                    .execute()
+                )
+            response = await asyncio.to_thread(_delete)
+            return bool(response.data)
+        except Exception as e:
+            logger.error(f"Failed to delete {cred_type} credentials for user {user_id}: {e}")
+            if is_connectivity_error(e):
+                raise
+            return False
 
     # ============ Notifications Operations ============
     async def create_notification(self, user_id: str, title: str, message: str, notification_type: str = "info") -> Dict[str, Any]:
@@ -254,6 +535,8 @@ class SupabaseService:
             return response.data
         except Exception as e:
             logger.error(f"Failed to get notifications for user {user_id}: {e}")
+            if is_connectivity_error(e):
+                raise
             return []
 
 

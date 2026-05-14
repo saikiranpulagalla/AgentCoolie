@@ -3,14 +3,14 @@ requires = ["setuptools>=65.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "coolie-assistant-backend"
+name = "agentcoolie-backend"
 version = "2.0.0"
 description = "AI-powered assistant backend with FastAPI"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
-    {name = "CoolieAssistant Team"},
+    {name = "AgentCoolie Team"},
 ]
 
 dependencies = [
@@ -23,8 +23,8 @@ dependencies = [
     "langchain>=0.0.352",
     "google-generativeai>=0.3.5",
     "openai>=1.3.9",
-    "cohere>=4.38",
     "python-dotenv>=1.0.0",
+    "pypdf>=4.0.0",
 ]
 
 [project.optional-dependencies]

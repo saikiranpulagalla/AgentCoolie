@@ -2,7 +2,9 @@ import { createContext, useContext, useEffect, useState } from "react";
 import {
   User,
   createUserWithEmailAndPassword,
+  GoogleAuthProvider,
   signInWithEmailAndPassword,
+  signInWithPopup,
   signOut as firebaseSignOut,
   onAuthStateChanged,
   updateProfile,
@@ -14,11 +16,28 @@ interface AuthContextType {
   loading: boolean;
   signUp: (email: string, password: string, displayName: string) => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
+  signInWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
   getIdToken: () => Promise<string | null>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+const authProviderMissingFallback: AuthContextType = {
+  user: null,
+  loading: false,
+  signUp: async () => {
+    throw new Error("Authentication is not ready. Please refresh the app.");
+  },
+  signIn: async () => {
+    throw new Error("Authentication is not ready. Please refresh the app.");
+  },
+  signInWithGoogle: async () => {
+    throw new Error("Authentication is not ready. Please refresh the app.");
+  },
+  signOut: async () => {},
+  getIdToken: async () => null,
+};
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -69,6 +88,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const authInstance = getFirebaseAuth();
       if (!authInstance) {
+        if (process.env.NODE_ENV !== 'development') {
+          throw new Error("Firebase authentication is not configured.");
+        }
         // Create mock user for testing
         console.warn("Firebase not initialized - using test user");
         const mockUser = {
@@ -94,8 +116,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const getIdToken = async () => {
     const authInstance = getFirebaseAuth();
     if (!authInstance) {
-      // Return a dummy token for testing
-      return "test-token-" + Date.now();
+      return null;
     }
     const current = authInstance.currentUser;
     if (!current) return null;
@@ -111,6 +132,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const authInstance = getFirebaseAuth();
       if (!authInstance) {
+        if (process.env.NODE_ENV !== 'development') {
+          throw new Error("Firebase authentication is not configured.");
+        }
         // Create mock user for testing
         console.warn("Firebase not initialized - using test user");
         const mockUser = {
@@ -127,6 +151,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await signInWithEmailAndPassword(authInstance, email, password);
     } catch (error) {
       console.error("Sign in error:", error);
+      throw error;
+    }
+  };
+
+  const signInWithGoogle = async () => {
+    try {
+      const authInstance = getFirebaseAuth();
+      if (!authInstance) {
+        if (process.env.NODE_ENV !== 'development') {
+          throw new Error("Firebase authentication is not configured.");
+        }
+        console.warn("Firebase not initialized - using test Google user");
+        const mockUser = {
+          uid: `google-test-${Date.now()}`,
+          email: "google-user@example.com",
+          displayName: "Google User",
+          emailVerified: true,
+        } as any;
+        setUser(mockUser);
+        localStorage.setItem('userId', mockUser.uid);
+        return;
+      }
+
+      const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: "select_account" });
+      await signInWithPopup(authInstance, provider);
+    } catch (error) {
+      console.error("Google sign in error:", error);
       throw error;
     }
   };
@@ -149,7 +201,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, signUp, signIn, signOut, getIdToken }}>
+    <AuthContext.Provider value={{ user, loading, signUp, signIn, signInWithGoogle, signOut, getIdToken }}>
       {children}
     </AuthContext.Provider>
   );
@@ -158,7 +210,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 export function useAuth() {
   const context = useContext(AuthContext);
   if (context === undefined) {
-    throw new Error("useAuth must be used within an AuthProvider");
+    console.warn("useAuth called before AuthProvider was available; using signed-out fallback state.");
+    return authProviderMissingFallback;
   }
   return context;
 }

@@ -15,8 +15,8 @@ supabase>=2.0
 langchain
 langchain-openai
 langchain-google-genai
+langsmith
 google-generativeai
-cohere
 openai
 
 # Google APIs
@@ -33,7 +33,10 @@ aiohttp
 sqlalchemy
 psycopg2-binary
 asyncpg
+redis>=5.0
 
 # Utils
 python-dotenv
 python-multipart
+Pillow
+pypdf

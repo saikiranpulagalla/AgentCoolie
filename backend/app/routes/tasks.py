@@ -5,6 +5,7 @@ Task management routes.
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from app.models import Task, TaskCreate, TaskUpdate
 from app.services import supabase_service, firebase_service
+from app.services.supabase_service import is_connectivity_error
 from app.agents import TaskAgent
 import logging
 
@@ -118,7 +119,12 @@ async def get_tasks(user_id: str = Depends(get_current_user)) -> list[dict]:
         return tasks
     except Exception as e:
         logger.error(f"Failed to fetch tasks: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        if is_connectivity_error(e):
+            raise HTTPException(
+                status_code=503,
+                detail="Could not reach Supabase. Check internet/DNS and SUPABASE_URL in .env.",
+            )
+        raise HTTPException(status_code=500, detail="Failed to fetch tasks")
 
 
 @router.get("/{task_id}", response_model=Task)
@@ -133,6 +139,8 @@ async def get_task(
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
         return task
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to fetch task: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -164,8 +172,12 @@ async def update_task(
         if "due_date" in update_data and update_data["due_date"]:
             update_data["due_date"] = update_data["due_date"].isoformat()
 
-        task = await supabase_service.update_task(task_id, **update_data)
+        task = await supabase_service.update_task(task_id, user_id=user_id, **update_data)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
         return task
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to update task: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -178,10 +190,12 @@ async def delete_task(
 ) -> dict:
     """Delete a task."""
     try:
-        success = await supabase_service.delete_task(task_id)
+        success = await supabase_service.delete_task(task_id, user_id=user_id)
         if not success:
             raise HTTPException(status_code=404, detail="Task not found")
         return {"status": "success", "message": "Task deleted"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to delete task: {e}")
         raise HTTPException(status_code=500, detail=str(e))

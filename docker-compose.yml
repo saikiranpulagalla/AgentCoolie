@@ -18,12 +18,12 @@ services:
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
       - GOOGLE_AI_API_KEY=${GOOGLE_AI_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - COHERE_API_KEY=${COHERE_API_KEY}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - GOOGLE_OAUTH_REDIRECT_URI=${GOOGLE_OAUTH_REDIRECT_URI}
       - YOUTUBE_API_KEY=${YOUTUBE_API_KEY}
       - SESSION_SECRET_KEY=${SESSION_SECRET_KEY}
+      - REDIS_URL=${REDIS_URL}
     volumes:
       - ./.firebase:/app/.firebase:ro
     depends_on:
@@ -73,9 +73,24 @@ services:
       - coolie-network
     restart: unless-stopped
 
+  # Redis short-term chat memory
+  redis:
+    image: redis:7-alpine
+    container_name: coolie-redis
+    profiles:
+      - local-memory
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - coolie-network
+    restart: unless-stopped
+
 networks:
   coolie-network:
     driver: bridge
 
 volumes:
   postgres_data:
+  redis_data:

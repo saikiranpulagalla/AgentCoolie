@@ -3,9 +3,11 @@ LangChain-based agents for automated task execution.
 """
 
 import logging
+import re
 from typing import Optional, Any, Dict
 from app.core.config import settings
-from app.services import gemini_service
+from app.services import gemini_service, web_search_service
+from app.services.tracing_service import traceable
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +31,7 @@ class ChatAgent:
     """Main conversational AI agent."""
 
     # System prompt for the AI assistant
-    SYSTEM_PROMPT = """You are CoolieAssistant, an intelligent personal AI assistant designed to help users manage tasks, communicate effectively, and automate workflows.
+    SYSTEM_PROMPT = """You are AgentCoolie, an intelligent personal AI assistant designed to help users manage tasks, communicate effectively, search the web, remember useful context, and automate workflows.
 
 ## Your Core Purpose
 - Help users create, organize, and track tasks
@@ -97,7 +99,103 @@ Remember: You're here to make the user's life easier and more productive."""
 
         logger.info(f"Chat agent initialized for user {user_id}")
 
-    async def chat(self, user_message: str) -> str:
+    def _format_short_memory(self, context: Optional[list[dict[str, str]]]) -> str:
+        if not context:
+            return "No recent conversation context."
+
+        lines = []
+        for item in context[-10:]:
+            role = str(item.get("role") or "user").strip().title()
+            content = str(item.get("content") or "").strip()
+            if content:
+                lines.append(f"{role}: {content}")
+
+        return "\n".join(lines) if lines else "No recent conversation context."
+
+    def _format_long_term_memory(self, memories: Optional[list[dict[str, Any]]]) -> str:
+        if not memories:
+            return "No long-term memory available."
+
+        lines = []
+        for item in memories:
+            content = str(item.get("content") or "").strip()
+            if content:
+                lines.append(f"- {content}")
+
+        return "\n".join(lines) if lines else "No long-term memory available."
+
+    def _format_web_results(self, web_results: Optional[list[dict[str, Any]]], web_search_attempted: bool) -> str:
+        return web_search_service.format_for_prompt(web_results or [], attempted=web_search_attempted)
+
+    def _is_memory_question(self, user_message: str) -> bool:
+        text = user_message.lower().strip()
+        return bool(
+            re.search(r"\bwhat\b.*\b(know|remember)\b.*\b(me|about me)\b", text)
+            or re.search(r"\b(do you|u)\s+(know|remember)\s+(about\s+)?me\b", text)
+            or re.search(r"\bwhat.*my.*(profile|details|context)\b", text)
+        )
+
+    def _direct_memory_answer(
+        self,
+        context: Optional[list[dict[str, str]]],
+        long_term_memories: Optional[list[dict[str, Any]]],
+    ) -> str | None:
+        memories = []
+        for item in long_term_memories or []:
+            content = str(item.get("content") or "").strip()
+            if content and content not in memories:
+                memories.append(content)
+
+        recent_user_messages = []
+        for item in context or []:
+            if str(item.get("role") or "").lower() == "user":
+                content = str(item.get("content") or "").strip()
+                if content:
+                    recent_user_messages.append(content)
+
+        if memories:
+            lines = ["Here's what I currently know from saved memory:"]
+            lines.extend(f"- {memory}" for memory in memories[:8])
+            if recent_user_messages:
+                lines.append(f"\nFrom this chat, your last question was: \"{recent_user_messages[-1]}\"")
+            return "\n".join(lines)
+
+        if recent_user_messages:
+            return (
+                "I do not have saved long-term facts for this account yet. "
+                f"From this current chat, your last question was: \"{recent_user_messages[-1]}\""
+            )
+
+        return "I do not have saved long-term facts for this account yet. Share stable details or preferences, and I can remember the important ones."
+
+    def _format_preferences(self, preferences: Optional[dict[str, Any]]) -> str:
+        if not preferences:
+            return "No explicit personalization settings saved."
+
+        tone = str(preferences.get("tone") or "friendly").strip()
+        response_length = str(preferences.get("response_length") or "moderate").strip()
+        formality = str(preferences.get("formality") or "medium").strip()
+        include_emojis = bool(preferences.get("include_emojis", False))
+
+        emoji_instruction = "Use emojis naturally when they add warmth." if include_emojis else "Avoid emojis unless the user explicitly asks for them."
+        return (
+            f"- Tone: {tone}\n"
+            f"- Response length: {response_length}\n"
+            f"- Formality: {formality}\n"
+            f"- Emoji preference: {emoji_instruction}\n"
+            "Follow these personalization settings unless they conflict with safety, accuracy, or the user's latest instruction."
+        )
+
+    @traceable(name="agent.chat", run_type="chain")
+    async def chat(
+        self,
+        user_message: str,
+        context: Optional[list[dict[str, str]]] = None,
+        long_term_memories: Optional[list[dict[str, Any]]] = None,
+        preferences: Optional[dict[str, Any]] = None,
+        web_results: Optional[list[dict[str, Any]]] = None,
+        web_search_attempted: bool = False,
+    ) -> str:
         """
         Process user message and generate response.
 
@@ -111,13 +209,35 @@ Remember: You're here to make the user's life easier and more productive."""
             # Use Gemini service for response generation
             if not gemini_service:
                 return "Gemini service not available. Please configure Google AI API key."
+
+            if self._is_memory_question(user_message):
+                direct = self._direct_memory_answer(context, long_term_memories)
+                if direct:
+                    return direct
             
-            # Create prompt with system context
+            short_memory = self._format_short_memory(context)
+            durable_memory = self._format_long_term_memory(long_term_memories)
+            personalization = self._format_preferences(preferences)
+            search_context = self._format_web_results(web_results, web_search_attempted)
+
+            # Create prompt with system context and Redis short memory.
             full_prompt = f"""{self.SYSTEM_PROMPT}
 
-User Message: {user_message}
+Personalization settings:
+{personalization}
 
-Respond as CoolieAssistant, keeping the guidelines above in mind."""
+Long-term user memory:
+{durable_memory}
+
+Recent conversation context from short memory (last 5 exchanges):
+{short_memory}
+
+Web search results when relevant:
+{search_context}
+
+Current User Message: {user_message}
+
+Respond as AgentCoolie, keeping the guidelines above in mind. You have web search only when results are provided above. When using web search results, mention the source URLs briefly. If web search was attempted but no results are available, say the live search failed and ask the user to retry; do not say you have no web search capability."""
             
             response = await gemini_service.analyze_text(user_message, prompt=full_prompt)
             
@@ -168,7 +288,7 @@ Text: {text}"""
 class WhatsappAgent:
     """Agent for handling WhatsApp messages and actions."""
 
-    SYSTEM_PROMPT = """You are CoolieAssistant's WhatsApp handler. Your role is to:
+    SYSTEM_PROMPT = """You are AgentCoolie's WhatsApp handler. Your role is to:
 1. Understand user intent from WhatsApp messages
 2. Extract actionable tasks from natural language
 3. Respond appropriately to user requests
@@ -262,7 +382,7 @@ Focus on understanding what the user wants to accomplish."""
 class GmailAgent:
     """Agent for handling Gmail operations."""
 
-    SYSTEM_PROMPT = """You are CoolieAssistant's Gmail handler. Your role is to:
+    SYSTEM_PROMPT = """You are AgentCoolie's Gmail handler. Your role is to:
 1. Analyze email content and extract key information
 2. Determine email priority and category
 3. Suggest task creation from important emails
@@ -350,7 +470,7 @@ Focus on understanding the email's purpose and extracting actionable items."""
 class TaskAgent:
     """Agent for task management and creation."""
 
-    SYSTEM_PROMPT = """You are CoolieAssistant's Task Manager. Your role is to:
+    SYSTEM_PROMPT = """You are AgentCoolie's Task Manager. Your role is to:
 1. Extract task details from natural language
 2. Identify due dates, priorities, and descriptions
 3. Suggest task creation when appropriate

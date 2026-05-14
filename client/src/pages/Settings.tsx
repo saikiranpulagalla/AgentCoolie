@@ -7,10 +7,10 @@ import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { getFirebaseStorage, getFirebaseAuth } from "@/lib/firebase";
+import { apiFetch, apiUrl, getApiBase } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
-import WhatsappConnect from "@/components/WhatsappConnect";
-import { Camera, User, Bell, Globe, Shield } from "lucide-react";
+import { Camera, User, Bell, Globe, Shield, PhoneCall, MessageCircle } from "lucide-react";
 import type { UserPreferences } from "@shared/schema";
 // Textarea not needed for masked secrets; using Input (password) instead
 
@@ -26,11 +26,30 @@ export default function Settings() {
     gmailRefreshToken: "",
   });
   const [hasGmailCreds, setHasGmailCreds] = useState(false);
-  // removed WhatsApp connector state and UI
+  const [callPhone, setCallPhone] = useState("");
+  const [hasCallPhone, setHasCallPhone] = useState(false);
+  const [callBackendConfigured, setCallBackendConfigured] = useState(false);
+  const [savingCallPhone, setSavingCallPhone] = useState(false);
+  const [whatsappPhone, setWhatsappPhone] = useState("");
+  const [hasWhatsappPhone, setHasWhatsappPhone] = useState(false);
+  const [whatsappVerificationCode, setWhatsappVerificationCode] = useState("");
+  const [savingWhatsappPhone, setSavingWhatsappPhone] = useState(false);
   const [savingCreds, setSavingCreds] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+  const clearGmailCredentialFlags = (uid?: string | null) => {
+    try {
+      localStorage.removeItem('has_gmail');
+      if (uid) localStorage.removeItem(`has_gmail_${uid}`);
+      Object.keys(localStorage)
+        .filter((key) => key === 'has_gmail' || key.startsWith('has_gmail_'))
+        .forEach((key) => localStorage.removeItem(key));
+    } catch (e) {
+      // ignore storage failures
+    }
+  };
 
   const saveCredentialFlag = (type: 'gmail' | 'whatsapp', uid: string) => {
     try {
@@ -40,11 +59,10 @@ export default function Settings() {
     }
   };
 
-  const N8N_BASE = (import.meta as any)?.env?.VITE_N8N_BASE_URL ?? '';
   const ENDPOINTS = {
     gmail: {
-      save: N8N_BASE ? `${N8N_BASE}/webhook/save-gmail-credentials` : '/api/external/save-gmail-credentials',
-      action: N8N_BASE ? `${N8N_BASE}/webhook/gmail-action` : '/api/external/gmail-action',
+      save: '/api/external/save-gmail-credentials',
+      action: '/api/external/gmail-action',
     },
   };
 
@@ -60,16 +78,40 @@ export default function Settings() {
     return {};
   };
 
+  const readErrorDetail = async (resp: Response) => {
+    const text = await resp.text().catch(() => '');
+    if (!text) return resp.statusText || 'Request failed';
+    try {
+      const parsed = JSON.parse(text);
+      return parsed?.detail || parsed?.message || parsed?.error || text;
+    } catch {
+      return text;
+    }
+  };
+
   // On first mount: capture ?connected=gmail and persist to localStorage so refresh keeps state
   useEffect(() => {
     try {
       const params = new URLSearchParams(window.location.search);
       if (params.get('connected') === 'gmail') {
-        setHasGmailCreds(true);
-        try { localStorage.setItem('has_gmail', 'true'); } catch (e) {}
-        toast({ title: 'Gmail connected', description: 'Your Gmail account was connected successfully.' });
+        const oauthError = params.get('error');
+        if (oauthError) {
+          setHasGmailCreds(false);
+          clearGmailCredentialFlags(user?.uid);
+          toast({
+            title: 'Gmail connection failed',
+            description: `Google OAuth returned: ${oauthError}`,
+            variant: 'destructive',
+          });
+        } else {
+          toast({
+            title: 'Checking Gmail connection',
+            description: 'Google returned successfully. Verifying saved credentials now.',
+          });
+        }
         // remove query param so UI doesn't show blanks later
         params.delete('connected');
+        params.delete('error');
         const cleaned = window.location.pathname + (params.toString() ? `?${params.toString()}` : '');
         window.history.replaceState({}, '', cleaned);
       }
@@ -80,33 +122,36 @@ export default function Settings() {
   }, []);
 
   // After auth state loads, verify with server whether Gmail credentials exist.
-  // If server call fails or user not logged in, fall back to localStorage flag.
+  // For logged-in users, the backend is the source of truth; cached flags must not
+  // resurrect a disconnected integration after refresh.
   useEffect(() => {
     (async () => {
       if (authLoading) return;
+      if (!user) {
+        setHasGmailCreds(false);
+        clearGmailCredentialFlags(null);
+        return;
+      }
       try {
         const headers = await getAuthHeaders();
-        const resp = await fetch('/api/integrations/status', { headers });
+        const resp = await apiFetch('/api/integrations/status', { headers });
         if (resp.ok) {
           const body = await resp.json().catch(() => ({}));
           if (body && body.gmail) {
             setHasGmailCreds(true);
-            try { localStorage.setItem('has_gmail', 'true'); } catch (e) {}
+            saveCredentialFlag('gmail', user.uid);
             return;
           }
+          setHasGmailCreds(false);
+          clearGmailCredentialFlags(user.uid);
+          return;
         }
       } catch (e) {
-        // ignore
+        console.error('Gmail status check failed', e);
       }
-      // fallback to localStorage if server check not available or returned false
-      try {
-        const flag = localStorage.getItem('has_gmail');
-        setHasGmailCreds(!!flag);
-      } catch (e) {
-        // ignore
-      }
+      setHasGmailCreds(false);
     })();
-  }, [authLoading]);
+  }, [authLoading, user?.uid]);
 
   const handleSaveGmailCredentials = async (e?: any) => {
     e?.preventDefault?.();
@@ -115,7 +160,8 @@ export default function Settings() {
       const uid = user?.uid || localStorage.getItem('userId');
       if (!uid) throw new Error('No user id');
   const headers = await getAuthHeaders();
-  const resp = await fetch(ENDPOINTS.gmail.save, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify({ userId: uid, credentials: gmailCredentials }) });
+  const saveUrl = apiUrl(ENDPOINTS.gmail.save);
+  const resp = await fetch(saveUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify({ userId: uid, credentials: gmailCredentials }) });
   const res = await resp.json().catch(() => ({ status: resp.ok ? 'success' : 'error', error: resp.ok ? undefined : 'Save failed' }));
   if (res?.status === 'success') {
         setHasGmailCreds(true);
@@ -125,7 +171,7 @@ export default function Settings() {
         // refresh server status to ensure persistence is reflected after save
         try {
           const headers = await getAuthHeaders();
-          const chk = await fetch('/api/integrations/status', { headers });
+          const chk = await apiFetch('/api/integrations/status', { headers });
           const payload = await chk.json().catch(() => ({}));
           if (chk.ok && payload) {
             setHasGmailCreds(!!payload.gmail);
@@ -141,9 +187,99 @@ export default function Settings() {
     }
   };
 
-  // WhatsApp credential handlers removed
+  useEffect(() => {
+    (async () => {
+      if (authLoading || !user) return;
+      try {
+        const headers = await getAuthHeaders();
+        const resp = await apiFetch('/api/integrations/call-reminder', { headers });
+        const body = await resp.json().catch(() => ({}));
+        if (resp.ok) {
+          setCallBackendConfigured(Boolean(body.configured));
+          setHasCallPhone(Boolean(body.connected));
+          setCallPhone(body.phone_number || "");
+        }
+      } catch (e) {
+        console.error('Call reminder status check failed', e);
+      }
+    })();
+  }, [authLoading, user?.uid]);
 
-  // WhatsApp connector logic removed
+  const handleSaveCallPhone = async (phoneOverride?: string) => {
+    setSavingCallPhone(true);
+    try {
+      const headers = await getAuthHeaders();
+      const resp = await apiFetch('/api/integrations/call-reminder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({ phone_number: (phoneOverride ?? callPhone).trim() }),
+      });
+      const body = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        throw new Error(body?.detail || body?.message || 'Could not save call reminder phone');
+      }
+      setCallBackendConfigured(Boolean(body.configured));
+      setHasCallPhone(Boolean(body.connected));
+      setCallPhone(body.phone_number || "");
+      toast({
+        title: body.connected ? 'Call reminders connected' : 'Call reminders disconnected',
+        description: body.connected ? 'Important tasks can now call this phone number.' : 'Phone call reminders are turned off for this account.',
+      });
+    } catch (err: any) {
+      toast({ title: 'Save failed', description: err?.message || String(err), variant: 'destructive' });
+    } finally {
+      setSavingCallPhone(false);
+    }
+  };
+
+  useEffect(() => {
+    (async () => {
+      if (authLoading || !user) return;
+      try {
+        const headers = await getAuthHeaders();
+        const resp = await apiFetch('/api/integrations/whatsapp', { headers });
+        const body = await resp.json().catch(() => ({}));
+        if (resp.ok) {
+          setHasWhatsappPhone(Boolean(body.connected));
+          setWhatsappPhone(body.phone_number || "");
+          setWhatsappVerificationCode(body.verification_code || "");
+        }
+      } catch (e) {
+        console.error('WhatsApp status check failed', e);
+      }
+    })();
+  }, [authLoading, user?.uid]);
+
+  const handleSaveWhatsappPhone = async (phoneOverride?: string) => {
+    setSavingWhatsappPhone(true);
+    try {
+      const headers = await getAuthHeaders();
+      const resp = await apiFetch('/api/integrations/whatsapp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({ phone_number: (phoneOverride ?? whatsappPhone).trim() }),
+      });
+      const body = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        throw new Error(body?.detail || body?.message || 'Could not save WhatsApp phone');
+      }
+      setHasWhatsappPhone(Boolean(body.connected));
+      setWhatsappPhone(body.phone_number || "");
+      setWhatsappVerificationCode(body.verification_code || "");
+      toast({
+        title: body.connected ? 'WhatsApp connected' : body.verification_required ? 'WhatsApp verification required' : 'WhatsApp disconnected',
+        description: body.verification_required
+          ? `Send LINK ${body.verification_code} from this WhatsApp number to your Twilio sandbox.`
+          : body.connected
+            ? 'Messages from this WhatsApp number will map to this AgentCoolie account.'
+            : 'WhatsApp access is turned off for this account.',
+      });
+    } catch (err: any) {
+      toast({ title: 'Save failed', description: err?.message || String(err), variant: 'destructive' });
+    } finally {
+      setSavingWhatsappPhone(false);
+    }
+  };
 
   const [preferences, setPreferences] = useState<UserPreferences>({
     theme: "system",
@@ -168,7 +304,7 @@ export default function Settings() {
   };
 
   return (
-    <div className="h-full overflow-auto bg-gradient-to-br from-background via-primary/5 to-chart-5/5 relative">
+    <div className="h-full overflow-auto app-surface relative">
       <div className="absolute inset-0 bg-grid-pattern opacity-5 pointer-events-none" />
       
       <div className="max-w-4xl mx-auto p-6 space-y-8 relative z-10">
@@ -377,10 +513,11 @@ export default function Settings() {
                     <Button variant="ghost" onClick={async () => {
                       try {
                         const headers = await getAuthHeaders();
-                        const resp = await fetch('/api/external/save-gmail-credentials', { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify({ credentials: null }) });
+                        const resp = await apiFetch('/api/external/save-gmail-credentials', { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify({ credentials: null }) });
                         // server returns 200 even on error payload; treat non-ok as error
                         if (!resp.ok) throw new Error('Failed to disconnect');
                         setHasGmailCreds(false);
+                        clearGmailCredentialFlags(user?.uid);
                         toast({ title: 'Disconnected', description: 'Gmail integration disconnected.' });
                       } catch (err: any) {
                         console.error('disconnect gmail failed', err);
@@ -393,7 +530,7 @@ export default function Settings() {
             ) : (
               <div className="grid gap-3">
                 <div className="space-y-2">
-                  <p className="text-sm text-muted-foreground">When enabled, Coolie Assistant can manage your Gmail account to send reminders and perform email automations on your behalf. Only one Gmail account may be connected at a time.</p>
+                  <p className="text-sm text-muted-foreground">When enabled, AgentCoolie can manage your Gmail account to send reminders and perform email automations on your behalf. Only one Gmail account may be connected at a time.</p>
                 </div>
 
                 <div className="flex items-center justify-between pt-2">
@@ -404,14 +541,14 @@ export default function Settings() {
                         const headers = await getAuthHeaders();
                         // If we're running in a dev/debug mode where the server accepts a uid query param,
                         // append the current user's uid so the server won't fallback to a debug value.
-                        let startUrl = '/api/oauth/google/start';
+                        let startUrl = apiUrl('/api/oauth/google/start');
                         if (user?.uid) startUrl += `?uid=${encodeURIComponent(user.uid)}`;
                         const resp = await fetch(startUrl, { headers });
                         const ct = resp.headers.get('content-type') || '';
                         if (!resp.ok) {
-                          const body = await resp.text().catch(() => '');
-                          console.error('oauth start failed', resp.status, body);
-                          alert(`Failed to start Google OAuth (HTTP ${resp.status}). See console for details.`);
+                          const detail = await readErrorDetail(resp);
+                          console.error('oauth start failed', resp.status, detail);
+                          alert(`Failed to start Google OAuth: ${detail}`);
                           return;
                         }
 
@@ -430,22 +567,22 @@ export default function Settings() {
                         const text = await resp.text().catch(() => '');
                         console.error('oauth start returned non-json response (likely frontend dev server):', text.slice(0, 200));
 
-                        // Attempt to contact backend directly on port 5050 only when running on localhost (dev fallback)
+                        // Attempt to contact backend directly when the dev proxy was not used.
                         try {
                           if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
                             throw new Error('Skipping localhost backend fallback on non-localhost host');
                           }
                           const headers2 = await getAuthHeaders();
-                          const backendOrigin = `${window.location.protocol}//${window.location.hostname}:5050`;
+                          const backendOrigin = getApiBase();
                           // If user is available, append uid to help debug-only server flows use the real UID
                           let backendUrl = `${backendOrigin}/api/oauth/google/start`;
                           if (user?.uid) backendUrl += `?uid=${encodeURIComponent(user.uid)}`;
                           const resp2 = await fetch(backendUrl, { headers: headers2 });
                           const ct2 = resp2.headers.get('content-type') || '';
                           if (!resp2.ok) {
-                            const body2 = await resp2.text().catch(() => '');
-                            console.error('oauth start backend failed', resp2.status, body2);
-                            alert(`Failed to start Google OAuth (backend HTTP ${resp2.status}). See console.`);
+                            const detail2 = await readErrorDetail(resp2);
+                            console.error('oauth start backend failed', resp2.status, detail2);
+                            alert(`Failed to start Google OAuth: ${detail2}`);
                             return;
                           }
                           if (ct2.includes('application/json')) {
@@ -463,7 +600,7 @@ export default function Settings() {
                           alert('Failed to start Google OAuth: server returned unexpected response (see console)');
                         } catch (err) {
                           console.error('oauth start backend request failed', err);
-                          const backendOrigin = `${window.location.protocol}//${window.location.hostname}:5050`;
+                          const backendOrigin = getApiBase();
                           alert(`Failed to reach backend at ${backendOrigin} - ensure your server is running (or remove the fallback). See console.`);
                         }
                       } catch (e) {
@@ -477,13 +614,133 @@ export default function Settings() {
             )}
           </div>
         </Card>
-        {/* WhatsApp connect component */}
-        <div>
-          {/* lazy-loaded component to avoid increasing initial bundle - simple import here */}
-          {/* eslint-disable-next-line @typescript-eslint/ban-ts-comment */}
-          {/* @ts-ignore */}
-          <WhatsappConnect />
-        </div>
+        <Card className="p-8 backdrop-blur-xl bg-card/80 border-2 hover-elevate transition-all duration-500 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-200 relative overflow-hidden">
+          <div className="absolute inset-0 bg-gradient-to-br from-chart-5/5 to-transparent rounded-lg -z-10" />
+          <div className="space-y-6">
+            <div className="flex items-center gap-4">
+              <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-chart-5/20 to-chart-5/10 flex items-center justify-center">
+                <PhoneCall className="h-5 w-5 text-chart-5" />
+              </div>
+              <div>
+                <h2 className="text-2xl font-bold">Call Reminders</h2>
+                <p className="text-sm text-muted-foreground">
+                  Save the phone number AgentCoolie should call for important task reminders.
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border bg-background/50 p-5 space-y-4">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <div className="font-semibold">
+                    Status: {hasCallPhone ? <span className="text-green-600">Connected</span> : <span className="text-muted-foreground">Not connected</span>}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Backend calling is {callBackendConfigured ? 'configured' : 'not configured'}.
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="call-phone">Phone number</Label>
+                <Input
+                  id="call-phone"
+                  value={callPhone}
+                  onChange={(e) => setCallPhone(e.target.value)}
+                  placeholder="+919000000000"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Use country code. Twilio trial accounts can call only verified recipient numbers.
+                </p>
+                <p className="text-xs text-amber-700 dark:text-amber-400">
+                  If you are using a Twilio trial account, verify this exact number in Twilio first. Otherwise call tasks will be saved but will show "Call number not verified" when due.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Button onClick={() => handleSaveCallPhone()} disabled={savingCallPhone}>
+                  {savingCallPhone ? 'Saving...' : 'Save Call Number'}
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={async () => {
+                    setCallPhone('');
+                    await handleSaveCallPhone('');
+                  }}
+                  disabled={savingCallPhone || !hasCallPhone}
+                >
+                  Disconnect
+                </Button>
+              </div>
+            </div>
+          </div>
+        </Card>
+
+        <Card className="p-8 backdrop-blur-xl bg-card/80 border-2 hover-elevate transition-all duration-500 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-250 relative overflow-hidden">
+          <div className="absolute inset-0 bg-gradient-to-br from-chart-3/5 to-transparent rounded-lg -z-10" />
+          <div className="space-y-6">
+            <div className="flex items-center gap-4">
+              <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-chart-3/20 to-chart-3/10 flex items-center justify-center">
+                <MessageCircle className="h-5 w-5 text-chart-3" />
+              </div>
+              <div>
+                <h2 className="text-2xl font-bold">WhatsApp Access</h2>
+                <p className="text-sm text-muted-foreground">
+                  Link the WhatsApp number that should control this AgentCoolie account.
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border bg-background/50 p-5 space-y-4">
+              <div>
+                <div className="font-semibold">
+                  Status: {hasWhatsappPhone ? <span className="text-green-600">Connected</span> : whatsappPhone ? <span className="text-amber-600">Verification pending</span> : <span className="text-muted-foreground">Not connected</span>}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Use the same number that joined your Twilio WhatsApp sandbox.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="whatsapp-phone">WhatsApp number</Label>
+                <Input
+                  id="whatsapp-phone"
+                  value={whatsappPhone}
+                  onChange={(e) => setWhatsappPhone(e.target.value)}
+                  placeholder="+919000000000"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Include country code. Incoming WhatsApp messages from this number will be routed to your account.
+                </p>
+                <p className="text-xs text-amber-700 dark:text-amber-400">
+                  After saving, send the shown LINK code from this WhatsApp number to your Twilio sandbox to prove ownership.
+                </p>
+                {whatsappVerificationCode && !hasWhatsappPhone && (
+                  <div className="rounded-lg border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/40 dark:text-amber-100">
+                    Send <span className="font-semibold">LINK {whatsappVerificationCode}</span> from this WhatsApp number.
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Button onClick={() => handleSaveWhatsappPhone()} disabled={savingWhatsappPhone}>
+                  {savingWhatsappPhone ? 'Saving...' : 'Save WhatsApp Number'}
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={async () => {
+                    setWhatsappPhone('');
+                    setWhatsappVerificationCode('');
+                    await handleSaveWhatsappPhone('');
+                  }}
+                  disabled={savingWhatsappPhone || !hasWhatsappPhone}
+                >
+                  Disconnect
+                </Button>
+              </div>
+            </div>
+          </div>
+        </Card>
 
         <Card className="p-8 backdrop-blur-xl bg-card/80 border-2 hover-elevate transition-all duration-500 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-300 relative overflow-hidden">
           <div className="absolute inset-0 bg-gradient-to-br from-chart-3/5 to-transparent rounded-lg -z-10" />

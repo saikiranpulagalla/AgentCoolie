@@ -1,4 +1,4 @@
-"""CoolieAssistant backend package."""
+"""AgentCoolie backend package."""
 
 from app.main import app
 

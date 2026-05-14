@@ -5,6 +5,7 @@ import { Label } from '@/components/ui/label';
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
+import { apiFetch } from '@/lib/api';
 
 export default function WhatsappConnect() {
   const { user, getIdToken } = useAuth();
@@ -39,7 +40,7 @@ export default function WhatsappConnect() {
     (async () => {
       try {
         const headers = await getAuthHeaders();
-  const resp = await fetch('/api/integrations/status', { headers });
+  const resp = await apiFetch('/api/integrations/status', { headers });
         if (resp.ok) {
           const body = await resp.json().catch(() => ({}));
           if (body && body.whatsapp) setStage('verified');
@@ -58,7 +59,7 @@ export default function WhatsappConnect() {
       const headers = await getAuthHeaders();
       const uid = user?.uid || localStorage.getItem('userId');
       const fetchHeaders: Record<string, string> = { 'Content-Type': 'application/json', ...headers };
-      const resp = await fetch('/api/whatsapp/verify', { method: 'POST', headers: fetchHeaders, body: JSON.stringify({ phoneNumber: normalized, userId: uid }) });
+      const resp = await apiFetch('/api/whatsapp/verify', { method: 'POST', headers: fetchHeaders, body: JSON.stringify({ phoneNumber: normalized, userId: uid }) });
       const body = await resp.json().catch(() => ({}));
       if (resp.ok) {
         setStage('sent');
@@ -87,7 +88,7 @@ export default function WhatsappConnect() {
   const headers = await getAuthHeaders();
   const uid = user?.uid || localStorage.getItem('userId');
   const fetchHeaders: Record<string, string> = { 'Content-Type': 'application/json', ...headers };
-  const resp = await fetch('/api/whatsapp/confirm', { method: 'POST', headers: fetchHeaders, body: JSON.stringify({ userId: uid, code }) });
+  const resp = await apiFetch('/api/whatsapp/confirm', { method: 'POST', headers: fetchHeaders, body: JSON.stringify({ userId: uid, code }) });
       const body = await resp.json().catch(() => ({}));
       if (resp.ok && body.status === 'verified') {
         setStage('verified');
@@ -107,7 +108,7 @@ export default function WhatsappConnect() {
       const headers = await getAuthHeaders();
       const fetchHeaders: Record<string, string> = { 'Content-Type': 'application/json', ...headers };
       // Call dedicated WhatsApp disconnect endpoint which removes number, messages and stored credentials
-      const resp = await fetch('/api/integrations/disconnect-whatsapp', { method: 'POST', headers: fetchHeaders });
+      const resp = await apiFetch('/api/integrations/disconnect-whatsapp', { method: 'POST', headers: fetchHeaders });
       const body = await resp.json().catch(() => ({}));
       if (resp.ok) {
         setStage('idle');

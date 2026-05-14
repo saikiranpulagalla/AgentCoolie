@@ -1,6 +1,5 @@
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage } from "@shared/schema";
-import { useAuth } from "./AuthContext";
 
 type Conversation = {
   id: string;
@@ -13,7 +12,7 @@ type Conversation = {
 interface ChatContextType {
   // current conversation messages (keeps compatibility with existing code)
   messages: ChatMessage[];
-  addMessage: (message: ChatMessage) => void;
+  addMessage: (message: ChatMessage, conversationId?: string | null) => void;
   clearMessages: () => void;
   isTyping: boolean;
   setIsTyping: (isTyping: boolean) => void;
@@ -22,6 +21,8 @@ interface ChatContextType {
   conversations: Conversation[];
   currentConversationId: string | null;
   newConversation: (title?: string) => string; // returns id
+  ensureConversation: (title?: string) => string;
+  updateConversationTitle: (id: string, title: string) => void;
   loadConversation: (id: string) => void;
   deleteConversation: (id: string) => void;
 }
@@ -87,22 +88,32 @@ function saveToStorageFor(uid: string | null | undefined, conversations: Convers
   }
 }
 
-export function ChatProvider({ children }: { children: React.ReactNode }) {
-  const { user } = useAuth();
+export function ChatProvider({
+  children,
+  userId,
+}: {
+  children: React.ReactNode;
+  userId?: string | null;
+}) {
 
   // start empty; we'll load from storage after auth state is known to avoid guest/uid race
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
+  const currentConversationIdRef = useRef<string | null>(null);
 
   const [isTyping, setIsTyping] = useState(false);
+
+  useEffect(() => {
+    currentConversationIdRef.current = currentConversationId;
+  }, [currentConversationId]);
 
   // Load conversations for the current user when user changes (or on mount for guest)
   useEffect(() => {
     try {
       // If a user just logged in, migrate any guest conversations to this user's key
-      if (user?.uid) {
+      if (userId) {
         try {
-          const userKey = `${STORAGE_PREFIX}:${user.uid}`;
+          const userKey = `${STORAGE_PREFIX}:${userId}`;
           const guestKey = `${STORAGE_PREFIX}:guest`;
           const hasUser = localStorage.getItem(userKey);
           const hasGuest = localStorage.getItem(guestKey);
@@ -115,37 +126,57 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      let loaded = loadFromStorageFor(user?.uid ?? null);
-      if ((!loaded || loaded.length === 0) && !user?.uid) {
-        // if no user and nothing found, try scanning any stored conversations (fallback)
-        loaded = scanAnyStoredConversations();
-      }
-      console.debug('ChatProvider: initializing conversations for user', user?.uid ?? 'none', 'loadedCount', loaded.length);
+      const loaded = loadFromStorageFor(userId ?? null);
+      console.debug('ChatProvider: initializing conversations for user', userId ?? 'none', 'loadedCount', loaded.length);
       setConversations(loaded);
-      setCurrentConversationId(loaded.length ? loaded[loaded.length - 1].id : null);
+      const nextCurrent = loaded.length ? loaded[loaded.length - 1].id : null;
+      currentConversationIdRef.current = nextCurrent;
+      setCurrentConversationId(nextCurrent);
     } catch (e) {
       console.warn('Failed to initialize conversations from storage', e);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.uid]);
+  }, [userId]);
 
   // persist when conversations or user changes
   useEffect(() => {
-    saveToStorageFor(user?.uid ?? null, conversations);
-  }, [conversations, user?.uid]);
+    saveToStorageFor(userId ?? null, conversations);
+  }, [conversations, userId]);
 
   const newConversation = (title?: string) => {
     const id = (typeof crypto !== 'undefined' && (crypto as any).randomUUID ? (crypto as any).randomUUID() : `${Date.now()}`);
     const now = new Date().toISOString();
     const conv: Conversation = { id, title: title ?? "New chat", messages: [], createdAt: now, updatedAt: now };
     setConversations((prev) => [...prev, conv]);
+    currentConversationIdRef.current = id;
     setCurrentConversationId(id);
     return id;
+  };
+
+  const ensureConversation = (title?: string) => {
+    const existingId = currentConversationIdRef.current;
+    if (existingId) return existingId;
+    return newConversation(title);
+  };
+
+  const updateConversationTitle = (id: string, title: string) => {
+    const cleanTitle = title.trim();
+    if (!cleanTitle) return;
+    setConversations((prev) => {
+      const idx = prev.findIndex((c) => c.id === id);
+      if (idx === -1) return prev;
+      const conv = prev[idx];
+      if (conv.title && conv.title !== "New chat") return prev;
+      const next = [...prev];
+      next[idx] = { ...conv, title: cleanTitle, updatedAt: new Date().toISOString() };
+      return next;
+    });
   };
 
   const loadConversation = (id: string) => {
     const exists = conversations.find((c) => c.id === id);
     if (!exists) return;
+    currentConversationIdRef.current = id;
     setCurrentConversationId(id);
   };
 
@@ -155,20 +186,23 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       // if deleted current, switch to last
       if (currentConversationId === id) {
         const last = next.length ? next[next.length - 1].id : null;
+        currentConversationIdRef.current = last;
         setCurrentConversationId(last);
       }
       return next;
     });
   };
 
-  const addMessage = (message: ChatMessage) => {
+  const addMessage = (message: ChatMessage, conversationId?: string | null) => {
+    const targetConversationId = conversationId ?? currentConversationIdRef.current;
     setConversations((prev) => {
-      let idx = prev.findIndex((c) => c.id === currentConversationId);
+      let idx = prev.findIndex((c) => c.id === targetConversationId);
       // if no current conversation, create one
       if (idx === -1) {
-        const id = (typeof crypto !== 'undefined' && (crypto as any).randomUUID ? (crypto as any).randomUUID() : `${Date.now()}`);
+        const id = targetConversationId || (typeof crypto !== 'undefined' && (crypto as any).randomUUID ? (crypto as any).randomUUID() : `${Date.now()}`);
         const now = new Date().toISOString();
         const conv: Conversation = { id, title: "New chat", messages: [message], createdAt: now, updatedAt: now };
+        currentConversationIdRef.current = id;
         setCurrentConversationId(id);
         return [...prev, conv];
       }
@@ -211,6 +245,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         conversations,
         currentConversationId,
         newConversation,
+        ensureConversation,
+        updateConversationTitle,
         loadConversation,
         deleteConversation,
       }}

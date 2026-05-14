@@ -2,11 +2,12 @@ import { useEffect, useState } from "react";
 import { TaskCard } from "@/components/TaskCard";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Plus, Mail, MessageCircle, AlertCircle, CheckCircle2, Play } from "lucide-react";
+import { Plus, Mail, AlertCircle, CheckCircle2, Play, Globe, PhoneCall } from "lucide-react";
 import type { Task } from "@shared/schema";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { useNotification } from "@/contexts/NotificationContext";
+import { apiFetch, apiUrl } from "@/lib/api";
 import {
   AlertDialog,
   AlertDialogContent,
@@ -22,9 +23,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 
 export default function Tasks() {
-  const [filter, setFilter] = useState<"all" | "gmail" | "whatsapp" | "reminder" | "youtube">("all");
+  const [filter, setFilter] = useState<"all" | "gmail" | "reminder" | "youtube" | "website">("all");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const { user, getIdToken } = useAuth();
@@ -75,6 +77,12 @@ export default function Tasks() {
                 type: d.type === 'general' ? 'reminder' : d.type,
                 priority: 'low',
                 completed: d.status === 'sent',
+                status: d.status || (d.status === 'sent' ? 'sent' : 'pending'),
+                executionMessage: d.execution_message,
+                lastAttemptAt: d.last_attempt_at ? new Date(d.last_attempt_at) : undefined,
+                notifyByCall: Boolean(d.notify_by_call),
+                callStatus: d.call_status,
+                callErrorCode: d.call_error_code,
                 dueDate: d.datetime ? new Date(d.datetime) : undefined,
                 createdAt: new Date(d.created_at || d.createdAt || Date.now()),
               } as Task));
@@ -100,7 +108,7 @@ export default function Tasks() {
           return;
         }
         console.log('Fetching reminders from server...');
-        const resp = await fetch('/api/reminders', { headers: { Authorization: `Bearer ${token}` } });
+        const resp = await apiFetch('/api/reminders', { headers: { Authorization: `Bearer ${token}` } });
         console.log('API response status:', resp.status, resp.statusText);
         if (!resp.ok) {
           const text = await resp.text().catch(() => '');
@@ -138,6 +146,12 @@ export default function Tasks() {
           priority: 'low',
           // only consider status === 'sent' as completed; failed should remain visible
           completed: d.status === 'sent',
+          status: d.status || (d.status === 'sent' ? 'sent' : 'pending'),
+          executionMessage: d.execution_message,
+          lastAttemptAt: d.last_attempt_at ? new Date(d.last_attempt_at) : undefined,
+          notifyByCall: Boolean(d.notify_by_call),
+          callStatus: d.call_status,
+          callErrorCode: d.call_error_code,
           dueDate: d.datetime ? new Date(d.datetime) : undefined,
           createdAt: new Date(d.created_at || d.createdAt || Date.now()),
         } as Task));
@@ -182,7 +196,7 @@ export default function Tasks() {
         }
         
         // request a short-lived connectId
-        const resp = await fetch('/api/sse/connect', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+        const resp = await apiFetch('/api/sse/connect', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
         if (!resp.ok) {
           console.error('SSE connect failed:', resp.status, resp.statusText);
           return;
@@ -191,7 +205,7 @@ export default function Tasks() {
         const connectId = body.connectId;
         console.log('SSE connecting with connectId:', connectId);
         
-        sse = new EventSource(`/api/sse/stream/${connectId}`);
+        sse = new EventSource(apiUrl(`/api/sse/stream/${connectId}`));
         
         sse.addEventListener("reminder", (ev: any) => {
           try {
@@ -213,6 +227,12 @@ export default function Tasks() {
                 type: "reminder",
                 priority: "low",
                 completed: false,
+                status: d.status || "pending",
+                executionMessage: d.execution_message,
+                lastAttemptAt: d.last_attempt_at ? new Date(d.last_attempt_at) : undefined,
+                notifyByCall: Boolean(d.notify_by_call),
+                callStatus: d.call_status,
+                callErrorCode: d.call_error_code,
                 dueDate: d.datetime ? new Date(d.datetime) : undefined,
                 createdAt: new Date(),
               };
@@ -308,7 +328,7 @@ export default function Tasks() {
         // Test notification
         new Notification('Test Notification', { 
           body: 'Notifications are now working!',
-          icon: '/favicon.ico'
+          icon: '/favicon.svg'
         });
       } else if (permission === 'denied') {
         toast({ 
@@ -354,7 +374,7 @@ export default function Tasks() {
         if (!url) {
           try {
             const token = await getIdToken();
-            const resp = await fetch('/api/youtube/open', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ query: msg }) });
+            const resp = await apiFetch('/api/youtube/open', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ query: msg }) });
             if (resp.ok) {
               const j = await resp.json();
               url = j?.video?.url || null;
@@ -387,8 +407,11 @@ export default function Tasks() {
           }
           // try open
           try {
-            const w = window.open(url, '_blank', 'noopener,noreferrer');
-            if (w) try { w.focus(); } catch (e) {}
+            const w = window.open(url, '_blank');
+            if (w) {
+              try { w.opener = null; } catch (e) {}
+              try { w.focus(); } catch (e) {}
+            }
           } catch (e) {
             console.warn('Failed to open YouTube from task', e);
           }
@@ -401,20 +424,35 @@ export default function Tasks() {
     const handleToggle = (id: string) => {
     setTasks((prev) =>
       prev.map((task) =>
-        task.id === id ? { ...task, completed: !task.completed } : task
+        task.id === id
+          ? {
+              ...task,
+              completed: !task.completed,
+              status: task.completed ? 'pending' : 'sent',
+              executionMessage: task.completed ? undefined : 'Task manually marked complete.',
+              lastAttemptAt: new Date(),
+            }
+          : task
       )
     );
     // persist
     const task = tasks.find((t) => t.id === id);
     if (task) {
       const newStatus = task.completed ? 'pending' : 'sent';
-      fetch(`/api/reminders/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: newStatus }) }).catch(console.error);
       (async () => {
         try {
           const token = await getIdToken();
           if (!token) return;
           const newStatus = task.completed ? 'pending' : 'sent';
-          const resp = await fetch(`/api/reminders/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ status: newStatus }) });
+          const resp = await apiFetch(`/api/reminders/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({
+              status: newStatus,
+              execution_message: newStatus === 'sent' ? 'Task manually marked complete.' : '',
+              last_attempt_at: new Date().toISOString(),
+            }),
+          });
           if (resp.ok) {
             toast({ title: 'Task updated', description: `Task ${task.title} marked ${newStatus === 'sent' ? 'complete' : 'pending'}` });
             if (newStatus === 'sent') {
@@ -437,7 +475,7 @@ export default function Tasks() {
       try {
         const token = await getIdToken();
         if (!token) return;
-        await fetch(`/api/reminders/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+        await apiFetch(`/api/reminders/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
       } catch (err) {
         console.error(err);
       } finally {
@@ -452,7 +490,7 @@ export default function Tasks() {
 
   // --- Modal form state and submit handler ---
   const [open, setOpen] = useState(false);
-  const [formType, setFormType] = useState<'general' | 'whatsapp' | 'gmail' | 'youtube'>('general');
+  const [formType, setFormType] = useState<'general' | 'gmail' | 'youtube' | 'website'>('general');
   const [formMessage, setFormMessage] = useState('');
   // Helper: format a Date to a value usable by <input type="datetime-local"> (YYYY-MM-DDTHH:mm)
   const formatForDatetimeLocal = (d: Date) => {
@@ -462,14 +500,15 @@ export default function Tasks() {
   };
 
   const [formDatetime, setFormDatetime] = useState(() => formatForDatetimeLocal(new Date(Date.now() + 60000)));
-  const [formPhone, setFormPhone] = useState('');
   const [formEmail, setFormEmail] = useState('');
+  const [notifyByCall, setNotifyByCall] = useState(false);
+  const [formCallPhone, setFormCallPhone] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const handleSubmit = async () => {
-    // Prevent creating gmail/whatsapp tasks if credentials are not saved in Settings
-    const integrationType = formType === 'gmail' ? 'gmail' : formType === 'whatsapp' ? 'whatsapp' : null;
+    // Prevent creating Gmail tasks if credentials are not saved in Settings
+    const integrationType = formType === 'gmail' ? 'gmail' : null;
     if (integrationType) {
       try {
         const uid = user?.uid || localStorage.getItem('userId');
@@ -491,12 +530,6 @@ export default function Tasks() {
     // validate datetime
     const parsedDate = Date.parse(formDatetime);
     if (Number.isNaN(parsedDate)) newErrors.datetime = 'Please provide a valid date/time';
-    // phone validation for E.164 (basic)
-    if (formType === 'whatsapp') {
-      const phoneRegex = /^\+[1-9]\d{7,14}$/;
-      if (!formPhone) newErrors.phone = 'Phone is required for WhatsApp reminders';
-      else if (!phoneRegex.test(formPhone)) newErrors.phone = 'Phone must be in E.164 format, e.g. +15551234567';
-    }
     // gmail validation for gmail addresses only
     if (formType === 'gmail') {
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -504,6 +537,12 @@ export default function Tasks() {
       else if (!emailRegex.test(formEmail)) newErrors.email = 'Please provide a valid email address';
       else if (!formEmail.toLowerCase().endsWith('@gmail.com') && !formEmail.toLowerCase().endsWith('@googlemail.com')) {
         newErrors.email = 'Please provide a Gmail address (gmail.com)';
+      }
+    }
+    if (notifyByCall && formCallPhone.trim()) {
+      const phoneRegex = /^\+[1-9]\d{7,14}$/;
+      if (!phoneRegex.test(formCallPhone.trim())) {
+        newErrors.callPhone = 'Call phone must be in E.164 format, e.g. +919000000000';
       }
     }
 
@@ -516,27 +555,38 @@ export default function Tasks() {
     try {
       // formDatetime is in local 'YYYY-MM-DDTHH:mm' format; parse as local and convert to ISO UTC
       const localDate = new Date(formDatetime);
-      // The server expects types 'whatsapp' | 'gmail' | 'general'. To avoid server-side enum/db errors,
-      // map client-only 'youtube' tasks to 'general' when sending to the API. The client will still
-      // display the created task as 'youtube' locally.
-      const sendType = formType === 'youtube' ? 'general' : formType;
+      const sendType = formType;
       const payload: any = { user_id: user?.uid, type: sendType, message: formMessage, datetime: localDate.toISOString() };
-      if (formType === 'whatsapp') payload.user_phone = formPhone;
       if (formType === 'gmail') { payload.user_email = formEmail; }
+      if (notifyByCall) {
+        payload.notify_by_call = true;
+        if (formCallPhone.trim()) payload.call_phone = formCallPhone.trim();
+      }
       const token = await getIdToken();
       const headers: any = { 'Content-Type': 'application/json' };
       if (token) headers.Authorization = `Bearer ${token}`;
-      const res = await fetch('/api/reminders', { method: 'POST', headers, body: JSON.stringify(payload) });
-      const data = await res.json();
+      const res = await apiFetch('/api/reminders', { method: 'POST', headers, body: JSON.stringify(payload) });
+      const rawText = await res.text();
+      let data: any = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch (e) {
+        data = { detail: rawText || res.statusText };
+      }
       if (res.ok) {
         const t: Task = {
           id: data.id,
           title: data.message.slice(0, 40),
           description: data.message,
-          // If the user created a YouTube task in the UI, prefer to show it as 'youtube' client-side
-          type: formType === 'youtube' ? 'youtube' : (data.type === 'general' ? 'reminder' : data.type),
+          type: data.type === 'general' ? 'reminder' : data.type,
           priority: 'low',
           completed: false,
+          status: data.status || 'pending',
+          executionMessage: data.execution_message,
+          lastAttemptAt: data.last_attempt_at ? new Date(data.last_attempt_at) : undefined,
+          notifyByCall: Boolean(data.notify_by_call),
+          callStatus: data.call_status,
+          callErrorCode: data.call_error_code,
           dueDate: data.datetime ? new Date(data.datetime) : undefined,
           createdAt: new Date(data.created_at || Date.now()),
         };
@@ -549,10 +599,12 @@ export default function Tasks() {
         setOpen(false);
         // reset
         setFormMessage('');
-        setFormPhone('');
         setFormEmail('');
+        setNotifyByCall(false);
+        setFormCallPhone('');
       } else {
-        alert('Failed to create reminder: ' + (data.message || 'unknown'));
+        const errorMessage = data.detail || data.message || res.statusText || 'unknown';
+        toast({ title: 'Failed to create reminder', description: errorMessage, variant: 'destructive' });
       }
     } catch (err) {
       console.error(err);
@@ -562,13 +614,15 @@ export default function Tasks() {
     }
   };
 
-  const filteredTasks = tasks.filter((task) => {
+  const visibleTasks = tasks.filter((task) => task.type !== "whatsapp");
+  const filteredTasks = visibleTasks.filter((task) => {
     if (filter === "all") return true;
     return task.type === filter;
   });
 
-  const activeTasks = filteredTasks.filter((t) => !t.completed);
+  const activeTasks = filteredTasks.filter((t) => !t.completed && t.status !== "missed_offline" && t.status !== "failed");
   const completedTasks = filteredTasks.filter((t) => t.completed);
+  const attentionTasks = filteredTasks.filter((t) => t.status === "missed_offline" || t.status === "failed");
 
   const stats = [
     {
@@ -579,6 +633,13 @@ export default function Tasks() {
       iconColor: "text-chart-1",
     },
     {
+      label: "Needs Review",
+      value: attentionTasks.length,
+      icon: AlertCircle,
+      gradient: "from-amber-500/20 to-amber-600/10",
+      iconColor: "text-amber-600",
+    },
+    {
       label: "Completed",
       value: completedTasks.length,
       icon: CheckCircle2,
@@ -587,39 +648,46 @@ export default function Tasks() {
     },
     {
       label: "Gmail",
-      value: tasks.filter((t) => t.type === "gmail").length,
+      value: visibleTasks.filter((t) => t.type === "gmail").length,
       icon: Mail,
       gradient: "from-chart-2/20 to-chart-2/10",
       iconColor: "text-chart-2",
     },
     {
-      label: "WhatsApp",
-      value: tasks.filter((t) => t.type === "whatsapp").length,
-      icon: MessageCircle,
-      gradient: "from-chart-4/20 to-chart-4/10",
-      iconColor: "text-chart-4",
-    },
-    {
       label: "YouTube",
-      value: tasks.filter((t) => t.type === "youtube").length,
+      value: visibleTasks.filter((t) => t.type === "youtube").length,
       icon: Play,
       gradient: "from-red-500/20 to-red-600/10",
       iconColor: "text-red-500",
     },
+    {
+      label: "Websites",
+      value: visibleTasks.filter((t) => t.type === "website").length,
+      icon: Globe,
+      gradient: "from-chart-2/20 to-primary/10",
+      iconColor: "text-primary",
+    },
+    {
+      label: "Call Alerts",
+      value: visibleTasks.filter((t) => t.notifyByCall).length,
+      icon: PhoneCall,
+      gradient: "from-chart-5/20 to-primary/10",
+      iconColor: "text-chart-5",
+    },
   ];
 
   return (
-    <div className="h-full overflow-auto bg-gradient-to-br from-background via-chart-3/5 to-chart-4/5 relative">
+    <div className="h-full overflow-auto app-surface relative">
       <div className="absolute inset-0 bg-grid-pattern opacity-5 pointer-events-none" />
       
       <div className="max-w-6xl mx-auto p-6 space-y-8 relative z-10">
         <div className="flex items-center justify-between gap-4 flex-wrap animate-in fade-in slide-in-from-top-4 duration-700">
           <div>
-            <h1 className="text-4xl font-bold bg-gradient-to-r from-chart-3 via-chart-4 to-chart-3 bg-clip-text text-transparent mb-2" data-testid="text-page-title">
+            <h1 className="text-4xl font-bold bg-gradient-to-r from-primary via-chart-5 to-primary bg-clip-text text-transparent mb-2" data-testid="text-page-title">
               Tasks Dashboard
             </h1>
             <p className="text-muted-foreground text-lg">
-              Manage your Gmail, WhatsApp, YouTube, and reminder tasks
+              Manage your Gmail, YouTube, website, and reminder tasks
             </p>
           </div>
           
@@ -627,7 +695,7 @@ export default function Tasks() {
             <AlertDialogTrigger asChild>
               <Button 
                 data-testid="button-add-task" 
-                className="bg-gradient-to-r from-chart-3 to-chart-4 hover:shadow-lg hover:shadow-chart-3/30 transition-all duration-300 hover:scale-105"
+                className="bg-primary text-primary-foreground hover:bg-primary/90 hover:shadow-lg hover:shadow-primary/30 transition-all duration-300 hover:scale-105"
               >
                 <Plus className="h-4 w-4 mr-2" />
                 Add Task
@@ -638,7 +706,7 @@ export default function Tasks() {
               <AlertDialogHeader>
                 <AlertDialogTitle>Create a Task</AlertDialogTitle>
                 <AlertDialogDescription>
-                  Create a Gmail, WhatsApp, YouTube or general reminder task.
+                  Create a Gmail, YouTube, website, or general reminder task.
                 </AlertDialogDescription>
               </AlertDialogHeader>
 
@@ -649,8 +717,8 @@ export default function Tasks() {
                     <SelectTrigger className="w-full"><SelectValue placeholder="Select type" /></SelectTrigger>
                     <SelectContent>
                         <SelectItem value="general">General</SelectItem>
-                        <SelectItem value="whatsapp">WhatsApp</SelectItem>
                         <SelectItem value="youtube">YouTube</SelectItem>
+                        <SelectItem value="website">Website</SelectItem>
                         <SelectItem value="gmail">Gmail</SelectItem>
                       </SelectContent>
                   </Select>
@@ -666,13 +734,34 @@ export default function Tasks() {
                   <Input type="datetime-local" value={formDatetime} onChange={(e) => setFormDatetime(e.target.value)} />
                   {errors.datetime && <p className="text-sm text-destructive mt-1">{errors.datetime}</p>}
                 </div>
-                {formType === 'whatsapp' && (
-                  <div>
-                    <Label>Phone (E.164)</Label>
-                    <Input value={formPhone} onChange={(e) => setFormPhone(e.target.value)} placeholder="+15551234567" />
-                    {errors.phone && <p className="text-sm text-destructive mt-1">{errors.phone}</p>}
+                <div className="rounded-lg border bg-card/60 p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <Label htmlFor="notify-by-call" className="text-sm font-semibold">
+                        Call me when due
+                      </Label>
+                      <p className="text-xs text-muted-foreground">
+                        Uses your saved call-reminder phone from Settings unless you enter one here.
+                      </p>
+                    </div>
+                    <Switch
+                      id="notify-by-call"
+                      checked={notifyByCall}
+                      onCheckedChange={setNotifyByCall}
+                    />
                   </div>
-                )}
+                  {notifyByCall && (
+                    <div>
+                      <Label>Optional call phone</Label>
+                      <Input
+                        value={formCallPhone}
+                        onChange={(e) => setFormCallPhone(e.target.value)}
+                        placeholder="+919000000000"
+                      />
+                      {errors.callPhone && <p className="text-sm text-destructive mt-1">{errors.callPhone}</p>}
+                    </div>
+                  )}
+                </div>
               </div>
 
               <AlertDialogFooter>
@@ -687,7 +776,7 @@ export default function Tasks() {
           {stats.map((stat, index) => (
             <div
               key={stat.label}
-              className="relative p-4 rounded-2xl bg-card/80 backdrop-blur-xl border-2 hover:shadow-lg transition-all duration-300 hover:scale-105 group overflow-hidden"
+              className="relative p-4 rounded-lg bg-card border interactive-card group overflow-hidden"
               style={{ animationDelay: `${200 + index * 50}ms` }}
             >
               <div className={`absolute inset-0 bg-gradient-to-br ${stat.gradient} opacity-50 group-hover:opacity-70 transition-opacity duration-300`} />
@@ -706,23 +795,23 @@ export default function Tasks() {
           <Tabs value={filter} onValueChange={(v) => setFilter(v as typeof filter)}>
             <TabsList className="bg-card/80 backdrop-blur-xl border">
               <TabsTrigger value="all" data-testid="tab-all" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-primary/10 data-[state=active]:to-chart-2/10">
-                All ({tasks.length})
+                All ({visibleTasks.length})
               </TabsTrigger>
               <TabsTrigger value="gmail" data-testid="tab-gmail" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-chart-1/10 data-[state=active]:to-chart-2/10">
                 <Mail className="h-4 w-4 mr-1" />
-                Gmail ({tasks.filter((t) => t.type === "gmail").length})
-              </TabsTrigger>
-              <TabsTrigger value="whatsapp" data-testid="tab-whatsapp" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-chart-3/10 data-[state=active]:to-chart-4/10">
-                <MessageCircle className="h-4 w-4 mr-1" />
-                WhatsApp ({tasks.filter((t) => t.type === "whatsapp").length})
+                Gmail ({visibleTasks.filter((t) => t.type === "gmail").length})
               </TabsTrigger>
               <TabsTrigger value="youtube" data-testid="tab-youtube" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-red-50/10 data-[state=active]:to-red-600/10">
                 <Play className="h-4 w-4 mr-1" />
-                YouTube ({tasks.filter((t) => t.type === "youtube").length})
+                YouTube ({visibleTasks.filter((t) => t.type === "youtube").length})
+              </TabsTrigger>
+              <TabsTrigger value="website" data-testid="tab-website" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-chart-2/10 data-[state=active]:to-primary/10">
+                <Globe className="h-4 w-4 mr-1" />
+                Websites ({visibleTasks.filter((t) => t.type === "website").length})
               </TabsTrigger>
               <TabsTrigger value="reminder" data-testid="tab-reminder" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-chart-4/10 data-[state=active]:to-chart-5/10">
                 <AlertCircle className="h-4 w-4 mr-1" />
-                Reminders ({tasks.filter((t) => t.type === "reminder").length})
+                Reminders ({visibleTasks.filter((t) => t.type === "reminder").length})
               </TabsTrigger>
             </TabsList>
           </Tabs>
@@ -731,7 +820,7 @@ export default function Tasks() {
         {loading ? (
           <div className="text-center py-20 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-500">
             <div className="mb-6 inline-flex">
-              <div className="h-24 w-24 rounded-3xl bg-gradient-to-br from-chart-3/20 to-chart-4/20 flex items-center justify-center">
+              <div className="h-24 w-24 rounded-3xl bg-gradient-to-br from-primary/15 to-chart-5/15 flex items-center justify-center">
                 <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-chart-3"></div>
               </div>
             </div>
@@ -740,10 +829,10 @@ export default function Tasks() {
               Please wait while we fetch your reminders and tasks.
             </p>
           </div>
-        ) : activeTasks.length === 0 && completedTasks.length === 0 ? (
+        ) : activeTasks.length === 0 && completedTasks.length === 0 && attentionTasks.length === 0 ? (
           <div className="text-center py-20 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-500">
             <div className="mb-6 inline-flex">
-              <div className="h-24 w-24 rounded-3xl bg-gradient-to-br from-chart-3/20 to-chart-4/20 flex items-center justify-center">
+              <div className="h-24 w-24 rounded-3xl bg-gradient-to-br from-primary/15 to-chart-5/15 flex items-center justify-center">
                 <CheckCircle2 className="h-12 w-12 text-chart-3" />
               </div>
             </div>
@@ -751,7 +840,7 @@ export default function Tasks() {
             <p className="text-muted-foreground max-w-md mx-auto mb-6">
               Create your first task to get started with organizing your work!
             </p>
-            <Button className="bg-gradient-to-r from-chart-3 to-chart-4">
+            <Button className="bg-primary text-primary-foreground hover:bg-primary/90">
               <Plus className="h-4 w-4 mr-2" />
               Create Task
             </Button>
@@ -775,6 +864,35 @@ export default function Tasks() {
                       key={task.id}
                       className="animate-in fade-in slide-in-from-left duration-500"
                       style={{ animationDelay: `${450 + index * 50}ms` }}
+                    >
+                      <TaskCard
+                        task={task}
+                        onToggle={handleToggle}
+                        onDelete={handleDelete}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {attentionTasks.length > 0 && (
+              <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-500">
+                <div className="flex items-center gap-3">
+                  <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-amber-500/20 to-amber-600/10 flex items-center justify-center">
+                    <AlertCircle className="h-5 w-5 text-amber-600" />
+                  </div>
+                  <h2 className="text-2xl font-semibold">Needs Review</h2>
+                  <span className="px-3 py-1 rounded-full bg-amber-500/10 text-amber-700 text-sm font-medium">
+                    {attentionTasks.length}
+                  </span>
+                </div>
+                <div className="grid gap-4">
+                  {attentionTasks.map((task, index) => (
+                    <div
+                      key={task.id}
+                      className="animate-in fade-in slide-in-from-left duration-500"
+                      style={{ animationDelay: `${550 + index * 50}ms` }}
                     >
                       <TaskCard
                         task={task}

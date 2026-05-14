@@ -1,159 +1,396 @@
-import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { MessageSquare, CheckSquare, Sparkles, ArrowRight, Zap, Shield, Clock } from "lucide-react";
-import { useAuth } from "@/contexts/AuthContext";
+import { useEffect, useState } from "react";
 import { Link } from "wouter";
+import {
+  ArrowRight,
+  Bell,
+  Bot,
+  Brain,
+  CalendarClock,
+  CheckCircle2,
+  CheckSquare,
+  FileText,
+  Globe,
+  MessageSquare,
+  Search,
+  Shield,
+  Sparkles,
+  Zap,
+} from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import {
+  type CarouselApi,
+  Carousel,
+  CarouselContent,
+  CarouselItem,
+  CarouselNext,
+  CarouselPrevious,
+} from "@/components/ui/carousel";
+import { useAuth } from "@/contexts/AuthContext";
+import { cn } from "@/lib/utils";
+
+const slides = [
+  {
+    title: "Ask once, continue with context",
+    description:
+      "AgentCoolie can remember useful facts like your college, goals, preferences, and recent conversation so follow-up questions feel natural.",
+    href: "/chat",
+    cta: "Continue Chat",
+    icon: Brain,
+    visual: "memory",
+  },
+  {
+    title: "Get current answers with sources",
+    description:
+      "Ask for recent news, current affairs, or fresh web information and get a useful answer with source links.",
+    href: "/chat",
+    cta: "Ask Current News",
+    icon: Search,
+    visual: "search",
+  },
+  {
+    title: "Schedule reminders and actions",
+    description:
+      "Create tasks like opening a song later, reviewing a topic tomorrow, or reminding yourself before a deadline.",
+    href: "/tasks",
+    cta: "Create Task",
+    icon: CalendarClock,
+    visual: "tasks",
+  },
+];
+
+const quickActions = [
+  {
+    title: "Start Chat",
+    description: "Ask questions, upload files, or continue a remembered conversation.",
+    icon: MessageSquare,
+    href: "/chat",
+  },
+  {
+    title: "Search Web",
+    description: "Ask for recent links and summaries without leaving the chat.",
+    icon: Search,
+    href: "/chat",
+  },
+  {
+    title: "Tasks",
+    description: "Create reminders and action tasks with due times.",
+    icon: CheckSquare,
+    href: "/tasks",
+  },
+  {
+    title: "Open Websites",
+    description: "Ask AgentCoolie to open or inspect a website for you.",
+    icon: Globe,
+    href: "/website",
+  },
+];
+
+const strengths = [
+  { icon: Zap, label: "Less friction", text: "Ask naturally instead of switching between tools and tabs." },
+  { icon: Shield, label: "Your workspace", text: "Your conversations, tasks, and reminders stay tied to your account." },
+  { icon: Brain, label: "Context-aware", text: "The assistant can use remembered facts when they are useful." },
+];
+
+function SlideVisual({ type }: { type: string }) {
+  if (type === "search") {
+    return (
+      <div className="grid h-full gap-3 p-5 text-white">
+        <div className="rounded-lg border border-white/12 bg-white/10 p-4">
+          <div className="mb-3 flex items-center gap-2 text-sm text-white/72">
+            <Search className="h-4 w-4 text-primary" />
+            Current search
+          </div>
+          <p className="text-lg font-semibold">recent Tamil Nadu politics news</p>
+        </div>
+        {["The Hindu", "NDTV", "BBC"].map((source, index) => (
+          <div key={source} className="landing-chat-line flex items-center gap-3 rounded-lg bg-white/10 p-3" style={{ animationDelay: `${index * 220}ms` }}>
+            <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary/20 text-xs text-primary">{index + 1}</div>
+            <div>
+              <p className="text-sm font-semibold">{source} result found</p>
+              <p className="text-xs text-white/58">Fresh source ready for summary</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (type === "tasks") {
+    return (
+      <div className="grid h-full gap-3 p-5 text-white">
+        {[
+          { icon: Bell, title: "Review current affairs", time: "Tomorrow, 8:00 AM" },
+          { icon: Globe, title: "Open Amazon", time: "When requested" },
+          { icon: CalendarClock, title: "Play study playlist", time: "7:00 PM" },
+        ].map((task, index) => (
+          <div key={task.title} className="landing-chat-line flex items-center gap-3 rounded-lg border border-white/12 bg-white/10 p-4" style={{ animationDelay: `${index * 260}ms` }}>
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary">
+              <task.icon className="h-5 w-5" />
+            </div>
+            <div>
+              <p className="font-semibold">{task.title}</p>
+              <p className="text-sm text-white/62">{task.time}</p>
+            </div>
+            <CheckCircle2 className="ml-auto h-5 w-5 text-primary" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid h-full gap-3 p-5 text-white">
+      <div className="rounded-lg border border-white/12 bg-white/10 p-4">
+        <div className="mb-3 flex items-center gap-2 text-sm text-white/72">
+          <Brain className="h-4 w-4 text-primary" />
+          Remembered for Sai
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {["KMIT college", "IAS preparation", "Maths score: 89", "Tamil Nadu politics"].map((chip) => (
+            <span key={chip} className="rounded-md bg-white/12 px-3 py-1.5 text-sm">{chip}</span>
+          ))}
+        </div>
+      </div>
+      <div className="landing-chat-line ml-auto max-w-[88%] rounded-lg bg-primary p-4 text-primary-foreground">
+        <p className="text-sm text-white/68">You ask</p>
+        <p className="font-semibold">What should I revise today?</p>
+      </div>
+      <div className="landing-chat-line landing-delay-1 max-w-[92%] rounded-lg bg-white/10 p-4">
+        <p className="text-sm text-white/68">AgentCoolie replies</p>
+        <p className="font-semibold">Let us connect it to your IAS prep and recent marks.</p>
+      </div>
+    </div>
+  );
+}
 
 export default function Home() {
   const { user } = useAuth();
+  const [api, setApi] = useState<CarouselApi>();
+  const [selected, setSelected] = useState(0);
 
-  const quickActions = [
-    {
-      title: "Start Chat",
-      description: "Talk with your AI assistant",
-      icon: MessageSquare,
-      href: "/chat",
-      gradient: "from-chart-1 to-chart-2",
-      iconBg: "bg-gradient-to-br from-chart-1/20 to-chart-2/20",
-      iconColor: "text-chart-1",
-    },
-    {
-      title: "View Tasks",
-      description: "Manage your daily tasks",
-      icon: CheckSquare,
-      href: "/tasks",
-      gradient: "from-chart-3 to-chart-4",
-      iconBg: "bg-gradient-to-br from-chart-3/20 to-chart-4/20",
-      iconColor: "text-chart-3",
-    },
-    {
-      title: "Browse Website",
-      description: "Open and browse any website",
-      icon: () => <svg className="h-7 w-7" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM12 20C7.58 20 4 16.42 4 12C4 7.58 7.58 4 12 4C16.42 4 20 7.58 20 12C20 16.42 16.42 20 12 20Z" fill="currentColor"/>
-        <path d="M13 7H11V13H17V11H13V7ZM12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM12 20C7.58 20 4 16.42 4 12C4 7.58 7.58 4 12 4C16.42 4 20 7.58 20 12C20 16.42 16.42 20 12 20Z" fill="currentColor"/>
-      </svg>,
-      href: "/website",
-      gradient: "from-chart-2 to-chart-4",
-      iconBg: "bg-gradient-to-br from-chart-2/20 to-chart-4/20",
-      iconColor: "text-chart-2",
-    },
-  ];
+  useEffect(() => {
+    if (!api) return;
+    const onSelect = () => setSelected(api.selectedScrollSnap());
+    onSelect();
+    api.on("select", onSelect);
+    return () => {
+      api.off("select", onSelect);
+    };
+  }, [api]);
 
-  const features = [
-    {
-      icon: Zap,
-      title: "Lightning Fast",
-      description: "Get instant responses and real-time task updates",
-      gradient: "from-chart-1/10 to-chart-1/5",
-    },
-    {
-      icon: Shield,
-      title: "Secure & Private",
-      description: "Your data is encrypted and always protected",
-      gradient: "from-chart-3/10 to-chart-3/5",
-    },
-    {
-      icon: Clock,
-      title: "Context Retention",
-      description: "Remembers your preferences and conversation history",
-      gradient: "from-chart-2/10 to-chart-2/5",
-    },
-  ];
+  useEffect(() => {
+    if (!api) return;
+    let timer: number | undefined;
+
+    const stopAutoAdvance = () => {
+      if (timer !== undefined) {
+        window.clearInterval(timer);
+        timer = undefined;
+      }
+    };
+
+    const startAutoAdvance = () => {
+      stopAutoAdvance();
+      if (document.hidden) return;
+      timer = window.setInterval(() => api.scrollNext(), 7000);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        stopAutoAdvance();
+      } else {
+        startAutoAdvance();
+      }
+    };
+
+    startAutoAdvance();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      stopAutoAdvance();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [api]);
 
   return (
-    <div className="h-full overflow-auto bg-gradient-to-br from-background via-primary/5 to-chart-2/5">
-      <div className="max-w-6xl mx-auto p-6 space-y-12">
-        <div className="space-y-6 text-center py-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
-          <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-primary/10 border border-primary/20 text-primary text-sm font-medium mb-2 animate-in zoom-in duration-500 delay-150">
-            <Sparkles className="h-4 w-4 animate-pulse" />
-            <span>AI-Powered Personal Assistant</span>
-          </div>
-          
-          <h1 className="text-5xl md:text-6xl font-bold bg-gradient-to-r from-primary via-chart-2 to-primary bg-clip-text text-transparent animate-in fade-in slide-in-from-top-4 duration-700 delay-200" data-testid="text-greeting">
-            Welcome back, {user?.displayName?.split(" ")[0] || "there"}
-          </h1>
-          
-          <p className="text-xl text-muted-foreground max-w-2xl mx-auto animate-in fade-in duration-700 delay-300">
-            Your personal AI assistant is ready to help you stay organized and productive. Experience the power of context-aware conversations.
-          </p>
-        </div>
+    <div className="h-full overflow-auto app-surface page-enter">
+      <section className="relative overflow-hidden border-b">
+        <div className="absolute inset-0 bg-grid-pattern opacity-[.06]" />
+        <div className="relative mx-auto grid max-w-7xl gap-8 px-6 py-10 lg:grid-cols-[1.05fr_.95fr] lg:items-center">
+          <div className="space-y-6">
+            <div className="inline-flex items-center gap-2 rounded-full border border-primary/20 bg-primary/10 px-4 py-2 text-sm font-medium text-primary">
+              <Bot className="h-4 w-4" />
+              Personal AI Agent
+            </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-400">
-          {quickActions.map((action, index) => (
-            <Link key={action.href} href={action.href}>
-              <Card className="group relative p-8 hover-elevate cursor-pointer transition-all duration-500 hover:shadow-2xl hover:scale-[1.02] border-2 overflow-hidden" 
-                    data-testid={`card-${action.title.toLowerCase().replace(" ", "-")}`}
-                    style={{ animationDelay: `${450 + index * 100}ms` }}>
-                <div className={`absolute inset-0 bg-gradient-to-br ${action.gradient} opacity-0 group-hover:opacity-5 transition-opacity duration-500`} />
-                <div className={`absolute -top-10 -right-10 w-40 h-40 bg-gradient-to-br ${action.gradient} opacity-10 rounded-full blur-2xl group-hover:opacity-20 transition-opacity duration-500`} />
-                
-                <div className="relative flex items-start justify-between gap-4">
-                  <div className="space-y-4 flex-1">
-                    <div className={`h-14 w-14 rounded-2xl ${action.iconBg} flex items-center justify-center ${action.iconColor} group-hover:scale-110 transition-transform duration-300 shadow-lg`}>
-                      <action.icon className="h-7 w-7" />
-                    </div>
-                    <div>
-                      <h3 className="text-2xl font-semibold mb-2 group-hover:text-primary transition-colors duration-300">{action.title}</h3>
-                      <p className="text-muted-foreground">
-                        {action.description}
-                      </p>
+            <div className="space-y-4">
+              <h1 className="max-w-3xl text-5xl font-bold leading-tight md:text-6xl" data-testid="text-greeting">
+                Welcome back, {user?.displayName?.split(" ")[0] || "there"}.
+                <span className="block text-primary">Let AgentCoolie keep the context.</span>
+              </h1>
+              <p className="max-w-2xl text-lg leading-8 text-muted-foreground">
+                Chat naturally, ask for current information, attach files, and schedule tasks without repeating your background every time.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-3">
+              <Link href="/chat">
+                <Button size="lg" className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90">
+                  <MessageSquare className="h-4 w-4" />
+                  Start Asking
+                </Button>
+              </Link>
+              <Link href="/tasks">
+                <Button size="lg" variant="outline" className="gap-2 hover:border-primary/50 hover:text-primary">
+                  Create a Task
+                  <ArrowRight className="h-4 w-4" />
+                </Button>
+              </Link>
+            </div>
+          </div>
+
+          <Carousel setApi={setApi} opts={{ align: "start", loop: true }} className="min-w-0">
+            <CarouselContent>
+              {slides.map((slide) => (
+                <CarouselItem key={slide.title}>
+                  <div className="group overflow-hidden rounded-lg border bg-[#10131a] shadow-xl">
+                    <div className="relative grid min-h-[430px] overflow-hidden lg:grid-cols-[.9fr_1.1fr]">
+                      <div className="space-y-4 p-6 text-white">
+                        <div className="inline-flex h-11 w-11 items-center justify-center rounded-lg bg-primary shadow-lg shadow-primary/30">
+                          <slide.icon className="h-5 w-5" />
+                        </div>
+                        <h2 className="text-3xl font-semibold leading-tight text-white">{slide.title}</h2>
+                        <p className="max-w-md text-sm leading-6 text-white/82">{slide.description}</p>
+                        <Link href={slide.href}>
+                          <Button className="bg-white text-slate-950 hover:bg-white/90">{slide.cta}</Button>
+                        </Link>
+                      </div>
+                      <div className="relative border-t border-white/10 bg-white/5 lg:border-l lg:border-t-0">
+                        <SlideVisual type={slide.visual} />
+                      </div>
+                      <div key={selected} className="absolute inset-x-0 bottom-0 h-1 bg-white/20">
+                        <div className="h-full w-full bg-primary slide-progress" />
+                      </div>
                     </div>
                   </div>
-                  <ArrowRight className="h-6 w-6 text-muted-foreground group-hover:text-primary group-hover:translate-x-1 transition-all duration-300 shrink-0" />
+                </CarouselItem>
+              ))}
+            </CarouselContent>
+            <CarouselPrevious className="left-3 border-white/30 bg-black/30 text-white hover:bg-black/50" />
+            <CarouselNext className="right-3 border-white/30 bg-black/30 text-white hover:bg-black/50" />
+            <div className="mt-5 grid gap-3 sm:grid-cols-3">
+              {slides.map((slide, index) => (
+                <button
+                  key={slide.title}
+                  type="button"
+                  onClick={() => api?.scrollTo(index)}
+                  className={cn(
+                    "pressable rounded-lg border bg-card p-3 text-left shadow-sm",
+                    selected === index ? "border-primary bg-primary/5" : "hover:border-primary/40",
+                  )}
+                >
+                  <div className="mb-2 flex items-center gap-2">
+                    <slide.icon className={cn("h-4 w-4", selected === index ? "text-primary" : "text-muted-foreground")} />
+                    <span className="text-xs font-medium text-muted-foreground">Use case {index + 1}</span>
+                  </div>
+                  <p className="text-sm font-semibold leading-5">{slide.title}</p>
+                </button>
+              ))}
+            </div>
+          </Carousel>
+        </div>
+      </section>
+
+      <section className="mx-auto max-w-7xl space-y-10 px-6 py-10">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+          {quickActions.map((action) => (
+            <Link key={action.title} href={action.href}>
+              <Card className="group h-full p-5 interactive-card pressable">
+                <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <action.icon className="h-6 w-6" />
                 </div>
+                <h3 className="mb-2 text-lg font-semibold group-hover:text-primary">{action.title}</h3>
+                <p className="text-sm leading-6 text-muted-foreground">{action.description}</p>
               </Card>
             </Link>
           ))}
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-600">
-          {features.map((feature, index) => (
-            <Card key={feature.title} className="p-6 hover-elevate transition-all duration-300 hover:shadow-lg border" 
-                  style={{ animationDelay: `${650 + index * 100}ms` }}>
-              <div className={`absolute inset-0 bg-gradient-to-br ${feature.gradient} rounded-lg`} />
-              <div className="relative">
-                <feature.icon className="h-10 w-10 text-primary mb-4" />
-                <h3 className="font-semibold text-lg mb-2">{feature.title}</h3>
-                <p className="text-sm text-muted-foreground">{feature.description}</p>
+        <div className="grid gap-6 lg:grid-cols-[.9fr_1.1fr] lg:items-stretch">
+          <div className="rounded-lg border bg-card p-7 shadow-sm">
+            <div className="mb-4 flex items-center gap-3">
+              <div className="agent-mark flex h-12 w-12 items-center justify-center rounded-lg bg-primary">
+                <Bot className="relative z-10 h-6 w-6 text-primary-foreground" />
               </div>
-            </Card>
-          ))}
-        </div>
-
-        <Card className="p-8 relative overflow-hidden border-2 hover-elevate transition-all duration-500 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-800">
-          <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-chart-2/5" />
-          <div className="absolute -bottom-10 -left-10 w-60 h-60 bg-primary/10 rounded-full blur-3xl" />
-          <div className="absolute -top-10 -right-10 w-60 h-60 bg-chart-2/10 rounded-full blur-3xl" />
-          
-          <div className="relative">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-primary to-chart-2 flex items-center justify-center shadow-lg">
-                <Sparkles className="h-6 w-6 text-primary-foreground" />
+              <div>
+                <p className="text-sm font-medium text-primary">About AgentCoolie</p>
+                <h2 className="text-2xl font-bold">A helper that remembers what you should not have to repeat.</h2>
               </div>
-              <h2 className="text-2xl font-bold">About Coolie</h2>
             </div>
-            <p className="text-muted-foreground leading-relaxed mb-6">
-              Coolie is your intelligent personal assistant with context retention. 
-              It helps you manage conversations, organize tasks from Gmail and WhatsApp, 
-              and remembers your preferences to provide personalized assistance.
+            <p className="leading-7 text-muted-foreground">
+              AgentCoolie is useful when your question depends on who you are, what you are working toward, what just happened, or what needs to happen later.
             </p>
-            <div className="flex gap-3 flex-wrap">
-              <Link href="/personalization">
-                <Button variant="default" className="bg-gradient-to-r from-primary to-chart-2 hover:shadow-lg hover:shadow-primary/30 transition-all duration-300" data-testid="button-personalize">
-                  <Sparkles className="h-4 w-4 mr-2" />
-                  Personalize Assistant
-                </Button>
-              </Link>
-              <Link href="/settings">
-                <Button variant="outline" className="hover:border-primary/50 transition-all duration-300" data-testid="button-settings">
-                  Settings
+            <div className="mt-6">
+              <Link href="/about">
+                <Button variant="outline" className="gap-2 hover:border-primary/50 hover:text-primary">
+                  Open About Page
+                  <ArrowRight className="h-4 w-4" />
                 </Button>
               </Link>
             </div>
           </div>
-        </Card>
-      </div>
+
+          <div className="grid gap-4 sm:grid-cols-3">
+            {strengths.map((item) => (
+              <div key={item.label} className="rounded-lg border bg-card p-5 pressable">
+                <item.icon className="mb-4 h-8 w-8 text-primary" />
+                <h3 className="mb-2 font-semibold">{item.label}</h3>
+                <p className="text-sm leading-6 text-muted-foreground">{item.text}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <section className="overflow-hidden rounded-lg border bg-card">
+          <div className="grid lg:grid-cols-[1fr_.8fr]">
+            <div className="space-y-5 p-8">
+              <div className="inline-flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1 text-sm text-primary">
+                <Sparkles className="h-4 w-4" />
+                Designed for daily use
+              </div>
+              <h2 className="text-3xl font-bold">Use it for studying, current affairs, files, reminders, and web actions.</h2>
+              <p className="leading-7 text-muted-foreground">
+                AgentCoolie is built for practical requests: remember this, explain this image, find recent updates, open that site, remind me later, or help me plan what to do next.
+              </p>
+              <div className="flex flex-wrap gap-3">
+                <Link href="/tasks">
+                  <Button className="bg-primary text-primary-foreground hover:bg-primary/90">Create a Task</Button>
+                </Link>
+                <Link href="/chat">
+                  <Button variant="outline">Ask AgentCoolie</Button>
+                </Link>
+              </div>
+            </div>
+            <div className="bg-[#11141b] p-6 text-white">
+              <div className="grid h-full min-h-[320px] content-center gap-3 rounded-lg border border-white/12 bg-white/8 p-5">
+                {[
+                  { icon: FileText, text: "Summarize a PDF or screenshot" },
+                  { icon: Search, text: "Find recent news with sources" },
+                  { icon: Bell, text: "Remind me before a deadline" },
+                  { icon: Globe, text: "Open a useful website" },
+                ].map((item) => (
+                  <div key={item.text} className="flex items-center gap-3 rounded-lg bg-white/10 p-3">
+                    <item.icon className="h-5 w-5 text-primary" />
+                    <span className="text-sm text-white/86">{item.text}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+      </section>
     </div>
   );
 }

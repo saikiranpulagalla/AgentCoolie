@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Send, Paperclip, Sparkles, Link } from "lucide-react";
+import { Send, Paperclip, Bot } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Mic, X } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
@@ -13,11 +13,9 @@ type Attachment = { name: string; mime: string; url: string };
 interface ChatInputProps {
   onSend: (message: string) => void;
   disabled?: boolean;
-  investigateMode?: boolean;
-  investigateType?: 'pdf' | 'url' | null;
 }
 
-export function ChatInput({ onSend, disabled, investigateMode, investigateType }: ChatInputProps) {
+export function ChatInput({ onSend, disabled }: ChatInputProps) {
   const [message, setMessage] = useState("");
   const [isFocused, setIsFocused] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -26,10 +24,19 @@ export function ChatInput({ onSend, disabled, investigateMode, investigateType }
   // speech recognition
   const [listening, setListening] = useState(false);
   const recognitionRef = useRef<any>(null);
+  const recordingTranscriptRef = useRef("");
 
   // microphone hook for recording & permission
   const { canRecord, permission: permissionState, isRecording, recordingMs, error: recordError, startRecording, stopRecording, requestPermission } = useMicrophone({
-    onRecordingReady: (att) => setAttachments((s) => [...s, att]),
+    onRecordingReady: (att) => {
+      const transcript = recordingTranscriptRef.current.trim();
+      if (transcript) {
+        setMessage((current) => (current.trim() ? `${current.trim()} ${transcript}` : transcript));
+        recordingTranscriptRef.current = "";
+        return;
+      }
+      setAttachments((s) => [...s, att]);
+    },
   });
   const { toast } = useToast();
 
@@ -39,12 +46,22 @@ export function ChatInput({ onSend, disabled, investigateMode, investigateType }
     if (!SpeechRecognition) return;
     try {
       const r = new SpeechRecognition();
-      r.continuous = false;
-      r.interimResults = false;
-      r.lang = 'en-US';
+      r.continuous = true;
+      r.interimResults = true;
+      r.lang = 'en-IN';
       r.onresult = (ev: any) => {
-        const text = ev.results?.[0]?.[0]?.transcript;
-        if (text) setMessage((m) => (m ? m + ' ' + text : text));
+        let finalText = "";
+        let interimText = "";
+        for (let i = ev.resultIndex || 0; i < ev.results.length; i += 1) {
+          const text = ev.results?.[i]?.[0]?.transcript || "";
+          if (ev.results?.[i]?.isFinal) finalText += ` ${text}`;
+          else interimText += ` ${text}`;
+        }
+        if (finalText.trim()) {
+          recordingTranscriptRef.current = `${recordingTranscriptRef.current} ${finalText}`.trim();
+        } else if (interimText.trim() && isRecording) {
+          recordingTranscriptRef.current = interimText.trim();
+        }
       };
       r.onend = () => setListening(false);
       recognitionRef.current = r;
@@ -88,6 +105,17 @@ export function ChatInput({ onSend, disabled, investigateMode, investigateType }
   };
 
   // recording handled via useMicrophone hook
+  const handleRecordClick = async () => {
+    if (isRecording) {
+      stopListening();
+      stopRecording();
+      return;
+    }
+
+    recordingTranscriptRef.current = "";
+    startListening();
+    await startRecording();
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -111,9 +139,6 @@ export function ChatInput({ onSend, disabled, investigateMode, investigateType }
   const onFilesPicked = async (files?: FileList | null) => {
     if (!files || files.length === 0) return;
     const allowed = Array.from(files).filter((f) => {
-      if (investigateMode && investigateType === 'pdf') {
-        return f.type === 'application/pdf';
-      }
       return f.type.startsWith('image/') || f.type === 'application/pdf';
     });
     const readPromises = allowed.map((f) => {
@@ -137,33 +162,31 @@ export function ChatInput({ onSend, disabled, investigateMode, investigateType }
   const triggerFilePicker = () => fileInputRef.current?.click();
 
   return (
-    <form onSubmit={handleSubmit} className="border-t bg-card/95 backdrop-blur-xl p-6 relative z-10 shadow-lg">
+    <form onSubmit={handleSubmit} className="border-t bg-card/95 backdrop-blur-xl p-4 sm:p-6 relative z-10 shadow-lg">
       <div className="absolute inset-0 bg-gradient-to-t from-primary/5 to-transparent pointer-events-none" />
       
       <div className={cn(
-        "flex gap-3 items-end max-w-4xl mx-auto relative transition-all duration-300",
+        "flex gap-3 items-end w-full max-w-4xl mx-auto relative transition-all duration-300",
         isFocused && "scale-[1.01]"
       )}>
         <input 
       ref={fileInputRef} 
       type="file" 
-      accept={investigateMode && investigateType === 'pdf' ? 'application/pdf' : 'image/*,application/pdf'} 
-      multiple={!investigateMode} 
+      accept="image/*,application/pdf" 
+      multiple 
       className="hidden" 
       onChange={(e) => onFilesPicked(e.target.files)} 
     />
-        {(!investigateMode || investigateType === 'pdf') && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="shrink-0 h-12 w-12 rounded-xl hover:bg-primary/10 hover:text-primary transition-all duration-300"
-            data-testid="button-attach"
-            onClick={triggerFilePicker}
-          >
-            <Paperclip className="h-5 w-5" />
-          </Button>
-        )}
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="shrink-0 h-12 w-12 rounded-xl hover:bg-primary/10 hover:text-primary transition-all duration-300"
+          data-testid="button-attach"
+          onClick={triggerFilePicker}
+        >
+          <Paperclip className="h-5 w-5" />
+        </Button>
         
         <div className="flex-1 relative">
           <Textarea
@@ -191,6 +214,8 @@ export function ChatInput({ onSend, disabled, investigateMode, investigateType }
             <div key={i} className="flex items-center gap-2 bg-card/80 border p-2 rounded-md">
               {a.mime.startsWith('image/') ? (
                 <img src={a.url} className="h-10 w-10 object-cover rounded-md" alt={a.name} />
+              ) : a.mime.startsWith('audio/') ? (
+                <div className="h-10 w-10 flex items-center justify-center bg-muted rounded-md text-xs">Audio</div>
               ) : (
                 <div className="h-10 w-10 flex items-center justify-center bg-muted rounded-md text-xs">PDF</div>
               )}
@@ -203,30 +228,11 @@ export function ChatInput({ onSend, disabled, investigateMode, investigateType }
         </div>
 
           <div className="flex items-center gap-2">
-            {/* URL input dialog - only show in URL mode */}
-            {investigateMode && investigateType === 'url' && (
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                onClick={() => {
-                  const url = window.prompt("Enter URL to analyze:");
-                  if (url) {
-                    setMessage((prev) => `${prev.trim() ? prev + '\n' : ''}${url}`);
-                  }
-                }}
-                className="shrink-0 h-12 w-12 rounded-xl transition-all duration-300"
-                title="Paste URL to analyze"
-              >
-                <Link className="h-5 w-5" />
-              </Button>
-            )}
-            
             <Button
               type="button"
               size="icon"
               variant={isRecording ? "destructive" : "ghost"}
-              onClick={() => (isRecording ? stopRecording() : startRecording())}
+              onClick={handleRecordClick}
               className="shrink-0 h-12 w-12 rounded-xl transition-all duration-300"
               title={isRecording ? "Stop recording" : "Record voice"}
               data-testid="button-record"
@@ -238,13 +244,13 @@ export function ChatInput({ onSend, disabled, investigateMode, investigateType }
             size="icon"
             disabled={!(message.trim() || attachments.length > 0) || disabled}
             className={cn(
-              "shrink-0 h-12 w-12 rounded-xl bg-gradient-to-br from-primary to-chart-2 hover:shadow-lg hover:shadow-primary/30 transition-all duration-300",
+              "shrink-0 h-12 w-12 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 hover:shadow-lg hover:shadow-primary/30 transition-all duration-300",
               (message.trim() || attachments.length > 0) && !disabled ? "scale-100 hover:scale-110" : "scale-95 opacity-50"
             )}
             data-testid="button-send"
           >
             {disabled ? (
-              <Sparkles className="h-5 w-5 animate-pulse" />
+              <Bot className="h-5 w-5 animate-pulse" />
             ) : (
               <Send className="h-5 w-5" />
             )}
@@ -256,12 +262,12 @@ export function ChatInput({ onSend, disabled, investigateMode, investigateType }
         {isRecording ? (
           <>
             <span className="h-2 w-2 rounded-full bg-red-500 animate-ping" />
-            <span>Recording... {(Math.floor(recordingMs / 1000)).toString().padStart(1, '0')}s — click mic to stop</span>
+            <span>Recording... {(Math.floor(recordingMs / 1000)).toString().padStart(1, '0')}s - click mic to stop</span>
           </>
         ) : (
           <>
-            <Sparkles className="h-3 w-3" />
-            <span>Press Enter to send, Shift+Enter for new line — attach images, PDFs, or record audio</span>
+            <Bot className="h-3 w-3" />
+            <span>Press Enter to send, Shift+Enter for new line - attach images, PDFs up to 25 readable pages, or record audio</span>
           </>
         )}
       </div>

@@ -2,7 +2,7 @@ import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Calendar, Mail, MessageCircle, AlertCircle, MoreVertical, Trash2, Play } from "lucide-react";
+import { Calendar, Mail, MessageCircle, AlertCircle, MoreVertical, Trash2, Play, WifiOff, CheckCircle2, Globe, PhoneCall } from "lucide-react";
 import type { Task } from "@shared/schema";
 import { cn } from "@/lib/utils";
 import {
@@ -23,6 +23,7 @@ const typeIcons = {
   whatsapp: MessageCircle,
   reminder: AlertCircle,
   youtube: Play,
+  website: Globe,
 };
 
 const typeColors = {
@@ -30,6 +31,7 @@ const typeColors = {
   whatsapp: "from-chart-3/20 to-chart-4/20",
   reminder: "from-chart-4/20 to-chart-5/20",
   youtube: "from-red-500/10 to-red-600/10",
+  website: "from-chart-2/20 to-primary/10",
 };
 
 const priorityColors = {
@@ -47,6 +49,9 @@ const priorityGradients = {
 export function TaskCard({ task, onToggle, onDelete }: TaskCardProps) {
   const Icon = typeIcons[task.type as keyof typeof typeIcons] ?? null;
   const priorityLabel = task.priority.charAt(0).toUpperCase() + task.priority.slice(1);
+  const status = task.status || (task.completed ? "sent" : "pending");
+  const callNumberUnverified = task.callErrorCode === "twilio_unverified_number";
+  const invalidCallNumber = task.callErrorCode === "invalid_phone_number";
 
   return (
     <Card
@@ -145,10 +150,51 @@ export function TaskCard({ task, onToggle, onDelete }: TaskCardProps) {
                 className="text-xs gap-1.5 px-3 py-1 bg-card/50 hover:bg-card transition-all duration-300"
               >
                 <Calendar className="h-3.5 w-3.5" />
-                {new Date(task.dueDate).toLocaleDateString()}
+                {new Date(task.dueDate).toLocaleString()}
+              </Badge>
+            )}
+
+            {status === "sent" && (
+              <Badge variant="outline" className="text-xs gap-1.5 px-3 py-1 bg-emerald-500/10 text-emerald-600 border-emerald-500/30">
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                Completed
+              </Badge>
+            )}
+
+            {status === "calling" && (
+              <Badge variant="outline" className="text-xs gap-1.5 px-3 py-1 bg-sky-500/10 text-sky-700 border-sky-500/30">
+                <PhoneCall className="h-3.5 w-3.5" />
+                Calling
+              </Badge>
+            )}
+
+            {task.notifyByCall && status !== "calling" && (
+              <Badge variant="outline" className="text-xs gap-1.5 px-3 py-1 bg-primary/10 text-primary border-primary/30">
+                <PhoneCall className="h-3.5 w-3.5" />
+                Call reminder
+              </Badge>
+            )}
+
+            {status === "missed_offline" && (
+              <Badge variant="outline" className="text-xs gap-1.5 px-3 py-1 bg-amber-500/10 text-amber-700 border-amber-500/30">
+                <WifiOff className="h-3.5 w-3.5" />
+                Missed while offline
+              </Badge>
+            )}
+
+            {status === "failed" && (
+              <Badge variant="outline" className="text-xs gap-1.5 px-3 py-1 bg-destructive/10 text-destructive border-destructive/30">
+                <AlertCircle className="h-3.5 w-3.5" />
+                {callNumberUnverified ? "Call number not verified" : invalidCallNumber ? "Invalid call number" : "Failed"}
               </Badge>
             )}
           </div>
+
+          {task.executionMessage && (
+            <p className={cn("text-xs", status === "failed" ? "text-destructive" : "text-muted-foreground")}>
+              {task.executionMessage}
+            </p>
+          )}
         </div>
       </div>
     </Card>

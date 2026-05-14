@@ -9,6 +9,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Sparkles, MessageCircle, Zap, Smile } from "lucide-react";
 import type { PersonalizationSettings } from "@shared/schema";
 import { useAuth } from "@/contexts/AuthContext";
+import { apiFetch } from "@/lib/api";
 
 export default function Personalization() {
   const { toast } = useToast();
@@ -33,8 +34,36 @@ export default function Personalization() {
     tone: "friendly",
     responseLength: "moderate",
     formality: "medium",
-    includeEmojis: true,
+    includeEmojis: false,
   });
+
+  useEffect(() => {
+    const applySettings = (next: Partial<PersonalizationSettings>) => {
+      setSettings((prev) => ({
+        tone: next.tone ?? prev.tone,
+        responseLength: next.responseLength ?? prev.responseLength,
+        formality: next.formality ?? prev.formality,
+        includeEmojis: typeof next.includeEmojis === 'boolean' ? next.includeEmojis : prev.includeEmojis,
+      }));
+    };
+
+    if (userId) {
+      try {
+        const cached = localStorage.getItem(`agentcoolie:preferences:${userId}`);
+        if (cached) applySettings(JSON.parse(cached));
+      } catch (e) {
+        console.warn('Failed to read cached personalization settings:', e);
+      }
+    }
+
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<Partial<PersonalizationSettings>>).detail;
+      if (detail) applySettings(detail);
+    };
+
+    window.addEventListener('agentcoolie:preferences-updated', handler as EventListener);
+    return () => window.removeEventListener('agentcoolie:preferences-updated', handler as EventListener);
+  }, [userId]);
 
   // load prefs
   useEffect(() => {
@@ -47,17 +76,23 @@ export default function Personalization() {
           const token = await getIdToken();
           if (token) headers.Authorization = `Bearer ${token}`;
         }
-        const res = await fetch(`/api/preferences/${userId}`, { headers });
+        const res = await apiFetch(`/api/preferences/${userId}`, { headers });
         if (!res.ok) return; // don't overwrite settings if fetch failed
         const data = await res.json();
         // only update settings if server returned a non-empty object
         if (data && Object.keys(data).length > 0) {
-          setSettings((prev) => ({
-            tone: data.tone ?? prev.tone,
-            responseLength: data.response_length ?? prev.responseLength,
-            formality: data.formality ?? prev.formality,
-            includeEmojis: typeof data.include_emojis === 'boolean' ? data.include_emojis : prev.includeEmojis,
-          }));
+          setSettings((prev) => {
+            const nextSettings = {
+              tone: data.tone ?? prev.tone,
+              responseLength: data.response_length ?? prev.responseLength,
+              formality: data.formality ?? prev.formality,
+              includeEmojis: typeof data.include_emojis === 'boolean' ? data.include_emojis : prev.includeEmojis,
+            };
+            try {
+              localStorage.setItem(`agentcoolie:preferences:${userId}`, JSON.stringify(nextSettings));
+            } catch {}
+            return nextSettings;
+          });
         }
       } catch (err) {
         console.error(err);
@@ -70,7 +105,7 @@ export default function Personalization() {
     try {
       const token = await getIdToken();
       if (!token) return toast({ title: 'Not signed in', description: 'Please sign in to save preferences.' });
-      const res = await fetch(`/api/preferences/${userId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ tone: settings.tone, responseLength: settings.responseLength, formality: settings.formality, includeEmojis: settings.includeEmojis }) });
+      const res = await apiFetch(`/api/preferences/${userId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ tone: settings.tone, responseLength: settings.responseLength, formality: settings.formality, includeEmojis: settings.includeEmojis }) });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) {
         console.error('Save failed', payload);
@@ -96,7 +131,7 @@ export default function Personalization() {
   };
 
   return (
-    <div className="h-full overflow-auto bg-gradient-to-br from-background via-chart-2/5 to-primary/5 relative">
+    <div className="h-full overflow-auto app-surface relative">
       <div className="absolute inset-0 bg-grid-pattern opacity-5 pointer-events-none" />
       
       <div className="max-w-4xl mx-auto p-6 space-y-8 relative z-10">
@@ -127,7 +162,7 @@ export default function Personalization() {
                   <div>
                     <Label className="text-lg font-semibold">Communication Tone</Label>
                     <p className="text-sm text-muted-foreground">
-                      Choose how Coolie communicates
+                      Choose how AgentCoolie communicates
                     </p>
                   </div>
                 </div>
@@ -270,7 +305,7 @@ export default function Personalization() {
                   Live Preview
                 </h3>
                 <p className="text-sm text-muted-foreground">
-                  Here's how Coolie will respond with your current settings
+                  Here's how AgentCoolie will respond with your current settings
                 </p>
               </div>
               

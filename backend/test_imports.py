@@ -155,7 +155,7 @@ def test_no_import_errors_in_agents():
 def run_all_tests():
     """Run all tests and report results."""
     print("\n" + "=" * 70)
-    print("COOLIEASSISTANT BACKEND - IMPORT & STRUCTURE TESTS")
+    print("AGENTCOOLIE BACKEND - IMPORT & STRUCTURE TESTS")
     print("=" * 70 + "\n")
     
     tests = [

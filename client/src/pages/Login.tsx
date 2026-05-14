@@ -3,7 +3,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Sparkles } from "lucide-react";
+import { Bot } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useEffect } from "react";
 import { useLocation } from "wouter";
@@ -15,7 +15,7 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const { signIn, signUp, user, loading } = useAuth();
+  const { signIn, signUp, signInWithGoogle, user, loading } = useAuth();
   const [, setLocation] = useLocation();
   const { toast } = useToast();
 
@@ -43,7 +43,7 @@ export default function Login() {
         await signUp(email, password, displayName);
         toast({
           title: "Account created",
-          description: "Welcome to Coolie!",
+          description: "Welcome to AgentCoolie.",
         });
       } else {
         await signIn(email, password);
@@ -76,13 +76,43 @@ export default function Login() {
     }
   };
 
+  const handleGoogleSignIn = async () => {
+    setIsLoading(true);
+    try {
+      await signInWithGoogle();
+      toast({
+        title: "Welcome",
+        description: "Signed in with Google",
+      });
+    } catch (error: any) {
+      let errorMessage = "Could not sign in with Google";
+      if (error.code === "auth/popup-closed-by-user") {
+        errorMessage = "Google sign-in was closed before it finished";
+      } else if (error.code === "auth/popup-blocked") {
+        errorMessage = "Popup blocked. Allow popups and try again.";
+      } else if (error.code === "auth/unauthorized-domain") {
+        errorMessage = "This domain is not authorized in Firebase Authentication settings.";
+      } else if (error.code === "auth/operation-not-allowed") {
+        errorMessage = "Enable Google as a sign-in provider in Firebase Console first.";
+      }
+
+      toast({
+        title: "Google sign-in failed",
+        description: errorMessage,
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary/10 via-background to-chart-2/10">
+      <div className="min-h-screen flex items-center justify-center app-surface">
         <div className="relative">
           <div className="animate-spin h-12 w-12 border-4 border-primary/20 border-t-primary rounded-full" />
           <div className="absolute inset-0 animate-pulse">
-            <Sparkles className="h-6 w-6 text-primary absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2" />
+            <Bot className="h-6 w-6 text-primary absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2" />
           </div>
         </div>
       </div>
@@ -90,25 +120,22 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-primary/10 via-background to-chart-2/10 relative overflow-hidden">
+    <div className="min-h-screen flex items-center justify-center p-4 app-surface relative overflow-hidden">
       <div className="absolute inset-0 bg-grid-pattern opacity-5" />
-      <div className="absolute top-20 left-20 w-72 h-72 bg-primary/20 rounded-full blur-3xl animate-pulse" />
-      <div className="absolute bottom-20 right-20 w-96 h-96 bg-chart-2/20 rounded-full blur-3xl animate-pulse delay-1000" />
-      
-      <Card className="w-full max-w-md p-8 space-y-6 backdrop-blur-xl bg-card/80 border-2 shadow-2xl relative z-10 animate-in fade-in slide-in-from-bottom-4 duration-700">
-        <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-chart-2/5 rounded-lg -z-10" />
+      <Card className="w-full max-w-md p-8 space-y-6 bg-card border shadow-lg relative z-10 animate-in fade-in slide-in-from-bottom-4 duration-700">
+        <div className="absolute inset-x-0 top-0 h-1 bg-primary" />
         
         <div className="text-center space-y-2">
           <div className="flex justify-center mb-4">
-            <div className="h-16 w-16 rounded-2xl bg-gradient-to-br from-primary to-chart-2 flex items-center justify-center shadow-lg shadow-primary/20 animate-in zoom-in duration-500 delay-150">
-              <Sparkles className="h-8 w-8 text-primary-foreground animate-pulse" />
+            <div className="h-16 w-16 rounded-lg bg-primary flex items-center justify-center shadow-sm animate-in zoom-in duration-500 delay-150">
+              <Bot className="h-8 w-8 text-primary-foreground" />
             </div>
           </div>
           <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-chart-2 bg-clip-text text-transparent animate-in fade-in slide-in-from-top-2 duration-500 delay-300">
-            {isSignUp ? "Join Coolie" : "Welcome Back"}
+            {isSignUp ? "Join AgentCoolie" : "Welcome Back"}
           </h1>
           <p className="text-muted-foreground animate-in fade-in duration-500 delay-400">
-            Your Personal AI Assistant with Context Retention
+            Your memory-aware AI command workspace
           </p>
         </div>
 
@@ -182,6 +209,20 @@ export default function Login() {
             )}
           </Button>
         </form>
+
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full gap-3 border-border bg-background/80 hover:bg-muted transition-all duration-300 hover:scale-[1.01]"
+          size="lg"
+          disabled={isLoading}
+          onClick={handleGoogleSignIn}
+        >
+          <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white text-sm font-bold text-red-600 shadow-sm">
+            G
+          </span>
+          Continue with Google
+        </Button>
 
         <div className="text-center text-sm">
           <button

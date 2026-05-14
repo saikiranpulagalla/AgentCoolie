@@ -4,6 +4,7 @@ Notifications routes.
 
 from fastapi import APIRouter, Depends, HTTPException, Header
 from app.services import supabase_service, firebase_service
+from app.services.supabase_service import is_connectivity_error
 import logging
 
 logger = logging.getLogger(__name__)
@@ -40,4 +41,9 @@ async def get_notifications(
         return notifications
     except Exception as e:
         logger.error(f"Failed to fetch notifications: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        if is_connectivity_error(e):
+            raise HTTPException(
+                status_code=503,
+                detail="Could not reach Supabase. Check internet/DNS and SUPABASE_URL in .env.",
+            )
+        raise HTTPException(status_code=500, detail="Failed to fetch notifications")

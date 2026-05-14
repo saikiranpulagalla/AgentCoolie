@@ -64,7 +64,7 @@ class FirebaseService:
             ValueError: If token is invalid
         """
         try:
-            decoded = auth.verify_id_token(token)
+            decoded = auth.verify_id_token(token, clock_skew_seconds=60)
             return decoded
         except firebase_admin.auth.InvalidIdTokenError as e:
             logger.warning(f"Invalid ID token: {e}")

@@ -5,7 +5,7 @@ import { ChatInput } from "@/components/ChatInput";
 import { useAuth } from "@/contexts/AuthContext";
 import { useChat } from "@/contexts/ChatContext";
 import { Button } from "@/components/ui/button";
-import { Trash2, Sparkles, PlusCircle, Archive, Search, MessageSquare, Link } from "lucide-react";
+import { Trash2, PlusCircle, Archive, Search, Brain, Radio, Bot } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiFetch, getApiBase } from "@/lib/api";
 
@@ -21,14 +21,15 @@ export default function Chat() {
     setIsTyping,
     conversations,
     newConversation,
+    ensureConversation,
+    updateConversationTitle,
     loadConversation,
     deleteConversation,
     currentConversationId,
   } = useChat();
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const lastYoutubeByConversationRef = useRef<Record<string, { url: string; title?: string; channel?: string }>>({});
   const [error, setError] = useState<string | null>(null);
-  const [isInvestigateMode, setIsInvestigateMode] = useState(false);
-  const [investigateType, setInvestigateType] = useState<'pdf' | 'url' | null>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -38,65 +39,139 @@ export default function Chat() {
     scrollToBottom();
   }, [messages, isTyping]);
 
-  const toggleChatMode = () => {
-    if (isInvestigateMode) {
-      // Switching to normal mode
-      setIsInvestigateMode(false);
-      setInvestigateType(null);
-    } else {
-      // Show option dialog when switching to investigate mode
-      const type = window.prompt('Select investigation type (pdf/url):')?.toLowerCase();
-      if (type === 'pdf' || type === 'url') {
-        setIsInvestigateMode(true);
-        setInvestigateType(type);
-      }
+  const deleteConversationMemory = async (conversationId: string) => {
+    try {
+      await apiFetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/memory`, {
+        method: 'DELETE',
+      });
+    } catch (e) {
+      console.warn('Failed to delete remote chat memory:', e);
     }
+  };
+
+  const recordConversationExchange = async (
+    conversationId: string,
+    userMessage: string,
+    assistantMessage: string,
+  ) => {
+    try {
+      await apiFetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/memory/exchange`, {
+        method: 'POST',
+        body: JSON.stringify({ userMessage, assistantMessage }),
+      });
+    } catch (e) {
+      console.warn('Failed to record chat-scoped memory:', e);
+    }
+  };
+
+  const handleDeleteConversation = (conversationId: string) => {
+    void deleteConversationMemory(conversationId);
+    delete lastYoutubeByConversationRef.current[conversationId];
+    deleteConversation(conversationId);
+  };
+
+  const handleClearMessages = () => {
+    if (currentConversationId) {
+      void deleteConversationMemory(currentConversationId);
+      delete lastYoutubeByConversationRef.current[currentConversationId];
+    }
+    clearMessages();
   };
 
   const handleSendMessage = async (content: string) => {
     // ChatInput may send structured payloads (JSON) containing message and attachments.
     let messageText = content;
     let attachments: any = undefined;
-    let url: string | undefined;
 
-    // allow building a prebuilt payload for investigate URL mode so sending goes through the same path
-    let prebuiltPayload: any = null;
     try {
-      // Only send webhook for user messages and only if message was created recently (< 2 minutes)
-      const now = Date.now();
-      // Handle investigate mode payload
-      if (isInvestigateMode) {
-        if (investigateType === 'url') {
-          const urlRegex = /https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)/;
-          const urlMatch = messageText.match(urlRegex);
-          if (!urlMatch) {
-            setError("Please provide a valid URL in investigate URL mode");
-            return;
-          }
+      const parsed = JSON.parse(content);
+      if (parsed && typeof parsed === 'object' && 'message' in parsed) {
+        messageText = String(parsed.message ?? "");
+        attachments = parsed.attachments;
+      }
+    } catch (e) {
+      // not JSON; treat content as plain text
+    }
 
-          // Create payload and defer sending to the shared send logic below
-          prebuiltPayload = {
-            message: messageText.trim(),
-            url: urlMatch[0],
-            userName: user?.displayName || "Anonymous",
-            userId: user?.uid,
-            investigateMode: true,
-            investigateType: 'url'
-          };
+    const makeChatTitle = (text: string) => {
+      const cleaned = text
+        .replace(/\s+/g, " ")
+        .replace(/^[^\w]+|[^\w?!.]+$/g, "")
+        .trim();
+      if (!cleaned) return "New chat";
+      const words = cleaned.split(" ").slice(0, 7).join(" ");
+      return words.length > 42 ? `${words.slice(0, 39).trim()}...` : words;
+    };
 
-          // don't return here; we'll use prebuiltPayload later to send via the common path
+    const targetConversationId = ensureConversation(makeChatTitle(messageText));
+    if (messages.length === 0) {
+      updateConversationTitle(targetConversationId, makeChatTitle(messageText));
+    }
+
+    const shouldTryVideoQuickPath = (() => {
+      if (!messageText || typeof messageText !== 'string') return false;
+      const t = messageText.trim().toLowerCase();
+      if (!t) return false;
+      if (lastYoutubeByConversationRef.current[targetConversationId] && /\b(play|open|watch)\s+(it|that)\b/.test(t)) return true;
+      if (/youtube\.com|youtu\.be/.test(t)) return true;
+      return /\b(open|play|show|find|search|watch)\b/.test(t) && /\b(video|youtube|song|trailer|clip)\b/.test(t);
+    })();
+
+    const openUrlInNewTab = (url: string): "new-tab" | "unknown" => {
+      try {
+        // Passing "noopener" as a feature can make Chromium return null even
+        // when the tab opens. Use a normal open, then harden opener manually.
+        const w = window.open(url, '_blank');
+        if (w) {
+          try { w.opener = null; } catch (e) { /* ignore opener hardening errors */ }
+          try { w.focus(); } catch (e) { /* ignore focus errors */ }
+          return "new-tab";
         }
+      } catch (e) {
+        console.warn('window.open failed:', e);
+      }
+      return "unknown";
+    };
 
-        if (investigateType === 'pdf' && (!attachments || attachments.length === 0)) {
-          setError("Please attach a PDF file in investigate PDF mode");
-          return;
-        }
+    const youtubeSearchUrl = (() => {
+      const cleaned = messageText
+        .replace(/\b(can|could|would)\s+u\b/gi, '')
+        .replace(/\b(can|could|would)\s+you\b/gi, '')
+        .replace(/\b(open|play|show|find|search|watch|in|on|youtube|video)\b/gi, ' ')
+        .replace(/[?!.]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const query = cleaned || messageText.trim();
+      return `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+    })();
+
+    if (shouldTryVideoQuickPath) {
+      const t = messageText.trim().toLowerCase();
+      const lastYoutubeForChat = lastYoutubeByConversationRef.current[targetConversationId];
+      if (lastYoutubeForChat && /\b(play|open|watch)\s+(it|that)\b/.test(t)) {
+        const openTarget = openUrlInNewTab(lastYoutubeForChat.url);
+        const assistantContent = openTarget === "new-tab"
+          ? `Opening ${lastYoutubeForChat.title || "the last YouTube result"} now.`
+          : `I tried to open ${lastYoutubeForChat.title || "the last YouTube result"}. If it did not appear, open it here:\n\n${lastYoutubeForChat.url}`;
+        addMessage({
+          id: Date.now().toString(),
+          content: messageText,
+          role: "user" as const,
+          timestamp: new Date(),
+          attachments,
+        }, targetConversationId);
+        addMessage({
+          id: (Date.now() + 1).toString(),
+          content: assistantContent,
+          role: "assistant" as const,
+          timestamp: new Date(),
+        }, targetConversationId);
+        void recordConversationExchange(targetConversationId, messageText, assistantContent);
+        setIsTyping(false);
+        return;
       }
 
-  // Always try the YouTube endpoint - it will use Gemini to detect video intents
-  // Track whether this message was handled locally (video opened) to avoid duplicate webhook calls
-  let handled = false;
-  try {
+      try {
         const resp = await apiFetch('/api/youtube/open', {
           method: 'POST',
           body: JSON.stringify({ query: messageText }),
@@ -108,57 +183,58 @@ export default function Chat() {
           // If it's a video request with high confidence, handle it
           if (json?.status === 'success' && json.isVideoRequest && json.confidence > 0.7 && json.video?.url) {
             const { video, searchQuery } = json;
+            lastYoutubeByConversationRef.current[targetConversationId] = {
+              url: video.url,
+              title: video.title,
+              channel: video.channel,
+            };
 
-            // Try opening the video. We'll attempt multiple methods to reduce false 'blocked' reports.
-            const handledVideo = { opened: false, url: video.url } as { opened: boolean; url: string };
-
-            // First attempt: window.open (preferred)
-            try {
-              const videoWindow = window.open(video.url, '_blank', 'noopener,noreferrer');
-              if (videoWindow) {
-                handledVideo.opened = true;
-                try { videoWindow.focus(); } catch (e) { /* ignore focus errors */ }
-              }
-            } catch (e) {
-              console.warn('window.open threw when trying to open video:', e);
-            }
-
-            // Second attempt: programmatic anchor click (works in some browsers/contexts)
-            if (!handledVideo.opened) {
-              try {
-                const a = document.createElement('a');
-                a.href = video.url;
-                a.target = '_blank';
-                a.rel = 'noopener noreferrer';
-                // Some browsers require the element to be in the document to allow opening
-                a.style.display = 'none';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                // We can't reliably detect success, but if no exception thrown assume it opened
-                handledVideo.opened = true;
-              } catch (e) {
-                console.warn('Programmatic anchor click failed to open video:', e);
-                handledVideo.opened = false;
-              }
-            }
+            const openTarget = openUrlInNewTab(video.url);
 
             // Craft assistant message: include fallback link only when both methods indicate failure
+            addMessage({
+              id: Date.now().toString(),
+              content: messageText,
+              role: "user" as const,
+              timestamp: new Date(),
+              attachments,
+            }, targetConversationId);
             const assistantMsg = {
               id: (Date.now() + 1).toString(),
-              content: handledVideo.opened
-                ? `📺 I found a video that matches your request!\n\nTitle: ${video.title}\nChannel: ${video.channel}\n\nI've opened it in a new tab for you.`
-                : `📺 I found a video that matches your request!\n\nTitle: ${video.title}\nChannel: ${video.channel}\n\nI couldn't open a new tab (likely blocked by your browser). You can open it here: ${video.url}`,
+              content: openTarget === "new-tab"
+                ? `I found a video that matches your request.\n\nTitle: ${video.title}\nChannel: ${video.channel}\n\nI've opened it in a new tab for you.`
+                : `I found a video that matches your request.\n\nTitle: ${video.title}\nChannel: ${video.channel}\n\nI tried to open it in a new tab. If it did not appear, open it here:\n\n${video.url}`,
               role: 'assistant' as const,
               timestamp: new Date(),
             };
 
-            addMessage(assistantMsg);
+            addMessage(assistantMsg, targetConversationId);
+            void recordConversationExchange(targetConversationId, messageText, assistantMsg.content);
             setIsTyping(false);
-            handled = true;
             // Stop further processing (don't send webhook) since we've handled the video
             return;
           }
+
+          const openTarget = openUrlInNewTab(youtubeSearchUrl);
+          const assistantContent = openTarget === "new-tab"
+            ? `I opened YouTube search results for your request.\n\n${youtubeSearchUrl}`
+            : `I tried to open YouTube search results. If they did not appear, open them here:\n\n${youtubeSearchUrl}`;
+          addMessage({
+            id: Date.now().toString(),
+            content: messageText,
+            role: "user" as const,
+            timestamp: new Date(),
+            attachments,
+          }, targetConversationId);
+            addMessage({
+              id: (Date.now() + 1).toString(),
+              content: assistantContent,
+              role: "assistant" as const,
+              timestamp: new Date(),
+            }, targetConversationId);
+          void recordConversationExchange(targetConversationId, messageText, assistantContent);
+          setIsTyping(false);
+          return;
           
           // If we got here, either:
           // 1. Not a video request (continue with normal chat)
@@ -169,51 +245,35 @@ export default function Chat() {
         console.warn('YouTube/video handling failed:', e);
         // Continue with normal chat flow on error
       }
-
-      const parsed = JSON.parse(content);
-      if (parsed && typeof parsed === 'object' && 'message' in parsed) {
-        messageText = String(parsed.message ?? "");
-        attachments = parsed.attachments;
-      }
-    } catch (e) {
-      // not JSON; treat content as plain text
     }
 
     let payload: any;
     
-    if (isInvestigateMode && investigateType === 'pdf') {
-      payload = {
-        message: messageText,
-        userName: user?.displayName || "Anonymous",
-        userId: user?.uid,
-        investigateMode: true,
-        investigateType: 'pdf',
-        files: attachments
-      };
-    } else {
-      // Regular chat mode
-      payload = {
-        message: messageText,
-        userName: user?.displayName || "Anonymous",
-        userId: user?.uid,
-      };
-    }
+    // Regular chat mode
+    payload = {
+      message: messageText,
+      userName: user?.displayName || "Anonymous",
+      userId: user?.uid,
+      conversationId: targetConversationId,
+    };
 
     const userMessage = {
       id: Date.now().toString(),
       content: messageText,
       role: "user" as const,
       timestamp: new Date(),
-      attachments: !isInvestigateMode ? attachments : undefined,
+      attachments: attachments,
     };
 
-    addMessage(userMessage);
+    addMessage(userMessage, targetConversationId);
     setIsTyping(true);
     setError(null);
 
     try {
       // prepare request
       const hasAudio = Array.isArray(attachments) && attachments.some((a: any) => typeof a?.mime === 'string' && a.mime.startsWith('audio/'));
+      const token = await getIdToken();
+      const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
 
       const dataUrlToBlob = (dataUrl: string): Blob => {
         const [meta, base64] = dataUrl.split(',');
@@ -245,6 +305,7 @@ export default function Chat() {
       const shouldTrySiteQuickPath = (() => {
         if (!messageText || typeof messageText !== 'string') return false;
         const t = messageText.trim().toLowerCase();
+        if (shouldTryVideoQuickPath || /youtube\.com|youtu\.be/.test(t)) return false;
         // Quick URL checks
         if (/https?:\/\//.test(t) || /\bwww\./.test(t)) return true;
         // Explicit action phrases that indicate the user wants to open/visit a site
@@ -278,25 +339,23 @@ export default function Chat() {
           if (siteResp.ok) {
             const siteJson = await siteResp.json();
             // If we get any indication of success from the website endpoint, don't forward to webhook
-            const success = siteJson?.status === 'success' || 
-                           siteJson?.opened_in_system_browser || 
-                           siteJson?.opened ||
-                           siteJson?.final_url ||
-                           siteJson?.data?.screenshot_url;
+            const success = Boolean(
+              siteJson?.opened_in_system_browser ||
+              siteJson?.opened ||
+              siteJson?.final_url ||
+              siteJson?.data?.screenshot_url
+            );
             
             if (success) {
               handled = true;
-              // If the server returned a final URL, open it in the user's browser (client-side)
+              // If the server returned a final URL, open it in the user's browser (client-side).
+              // Never redirect the app's current tab as a popup fallback; that can double-open
+              // in browsers that partially allow window.open and makes the chat page disappear.
               if (siteJson?.final_url) {
-                try {
-                  const w = window.open(siteJson.final_url, '_blank', 'noopener,noreferrer');
-                  if (w) try { w.focus(); } catch (e) { /* ignore */ }
-                } catch (e) {
-                  console.warn('window.open failed for site quick-path', e);
-                }
+                const openTarget = openUrlInNewTab(siteJson.final_url);
                 const assistantMsg = {
                   id: (Date.now() + 1).toString(),
-                  content: `🌐 I found the website you're looking for!\n\n${
+                  content: `I found the website you're looking for.\n\n${
                     siteJson?.data?.title 
                       ? `Title: ${siteJson.data.title}\n` 
                       : ''
@@ -304,11 +363,12 @@ export default function Chat() {
                     siteJson?.data?.description 
                       ? `Description: ${siteJson.data.description}\n` 
                       : ''
-                  }\nI've opened it in a new tab for you. (${siteJson.final_url})`,
+                  }\n${openTarget === "new-tab" ? "I've opened it in a new tab for you." : "I tried to open it in a new tab. If it did not appear, open it here:"} ${siteJson.final_url}`,
                   role: 'assistant' as const,
                   timestamp: new Date(),
                 };
-                addMessage(assistantMsg);
+                addMessage(assistantMsg, targetConversationId);
+                void recordConversationExchange(targetConversationId, messageText, assistantMsg.content);
                 setIsTyping(false);
                 return; // handled — don't forward to webhook
               }
@@ -316,7 +376,7 @@ export default function Chat() {
               if (siteJson?.data?.screenshot_url) {
                 const assistantMsg = {
                   id: (Date.now() + 1).toString(),
-                  content: `🌐 I found and captured the website for you!\n\n${
+                  content: `I found and captured the website for you.\n\n${
                     siteJson?.data?.title 
                       ? `Title: ${siteJson.data.title}\n` 
                       : ''
@@ -328,7 +388,8 @@ export default function Chat() {
                   role: 'assistant' as const,
                   timestamp: new Date(),
                 };
-                addMessage(assistantMsg);
+                addMessage(assistantMsg, targetConversationId);
+                void recordConversationExchange(targetConversationId, messageText, assistantMsg.content);
                 setIsTyping(false);
                 return; // handled
               }
@@ -345,18 +406,11 @@ export default function Chat() {
           return;
         }
       }
-        // If we built a prebuiltPayload (URL investigate) use it directly and send as JSON
-        if (prebuiltPayload) {
-        console.debug("Sending prebuilt JSON webhook POST to", WEBHOOK_URL, "payload:", prebuiltPayload);
-        response = await fetch(WEBHOOK_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(prebuiltPayload),
-        });
-        didSendWebhook = true;
-      } else if (hasAudio) {
+
+      if (hasAudio) {
         const form = new FormData();
         form.append('message', messageText);
+        form.append('conversationId', targetConversationId);
         if (user?.uid) form.append('userId', String(user.uid));
         if (user?.displayName) form.append('userName', String(user.displayName));
 
@@ -383,22 +437,23 @@ export default function Chat() {
         console.debug("Sending multipart webhook POST to", WEBHOOK_URL);
         response = await fetch(WEBHOOK_URL, {
           method: 'POST',
+          headers: authHeaders,
           body: form,
         });
         didSendWebhook = true;
       } else {
-        // For investigate modes do not include attachments in the JSON payload
         const jsonPayload: any = {
           message: messageText,
           userId: user?.uid,
           userName: user?.displayName || "Anonymous",
+          conversationId: targetConversationId,
+          attachments: attachments ?? undefined,
         };
-        if (!isInvestigateMode) jsonPayload.attachments = attachments ?? undefined;
 
         console.debug("Sending JSON webhook POST to", WEBHOOK_URL, "payload:", jsonPayload);
         response = await fetch(WEBHOOK_URL, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...authHeaders },
           body: JSON.stringify(jsonPayload),
         });
         didSendWebhook = true;
@@ -448,10 +503,7 @@ export default function Chat() {
         }
       }
 
-        // If in investigate mode and a URL was sent, add a visual indicator
-        if (url) {
-          messageText = `🔗 Analyzing URL: ${url}\n${messageText}`;
-        }      // Derive assistant content from common fields or fallbacks
+      // Derive assistant content from common fields or fallbacks
       let assistantContent = "I received your message!";
       let assistantModel: string | undefined = undefined;
 
@@ -532,6 +584,24 @@ export default function Chat() {
           top = first;
         }
       }
+      if (top && typeof top === 'object' && top.tool_used === 'preferences' && top.preferences) {
+        try {
+          const normalizedPreferences = {
+            tone: top.preferences.tone,
+            responseLength: top.preferences.response_length,
+            formality: top.preferences.formality,
+            includeEmojis: top.preferences.include_emojis,
+          };
+          if (user?.uid) {
+            localStorage.setItem(`agentcoolie:preferences:${user.uid}`, JSON.stringify(normalizedPreferences));
+          }
+          window.dispatchEvent(new CustomEvent('agentcoolie:preferences-updated', {
+            detail: normalizedPreferences,
+          }));
+        } catch (e) {
+          console.warn('Failed to publish preference update:', e);
+        }
+      }
       const txt = extractText(top);
       if (txt) assistantContent = txt;
 
@@ -606,13 +676,13 @@ export default function Chat() {
       if (assistantModel) assistantMessage.model = assistantModel;
       // Avoid adding noisy empty responses
       if (assistantMessage.content && assistantMessage.content !== '(empty response)') {
-        addMessage(assistantMessage);
+        addMessage(assistantMessage, targetConversationId);
       } else {
         console.debug('Filtered out empty assistant response');
       }
     } catch (err) {
       console.error("Error sending message:", err);
-      const friendly = "Server unreachable — please check your connection and try again.";
+      const friendly = "Server unreachable - please check your connection and try again.";
       setError(friendly);
 
       const errorMessage = {
@@ -621,20 +691,20 @@ export default function Chat() {
         role: "assistant" as const,
         timestamp: new Date(),
       };
-      addMessage(errorMessage);
+      addMessage(errorMessage, targetConversationId);
     } finally {
       setIsTyping(false);
     }
   };
 
   return (
-    <div className="h-full flex bg-gradient-to-br from-background via-primary/5 to-chart-2/5 relative">
+    <div className="h-full flex app-surface relative page-enter">
       <div className="absolute inset-0 bg-grid-pattern opacity-5 pointer-events-none" />
-      <aside className="w-80 border-r bg-card/70 backdrop-blur-xl p-4 z-10">
+      <aside className="hidden xl:block w-80 border-r glass-panel p-4 z-10">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-primary to-chart-2 flex items-center justify-center">
-              <Sparkles className="h-5 w-5 text-primary-foreground" />
+            <div className="h-10 w-10 rounded-lg bg-primary agent-mark flex items-center justify-center">
+              <Bot className="h-5 w-5 text-primary-foreground relative z-10" />
             </div>
             <div>
               <h2 className="text-lg font-semibold">Chats</h2>
@@ -653,18 +723,18 @@ export default function Chat() {
           {conversations.map((c) => (
             <div
               key={c.id}
-              className={`flex items-center justify-between p-2 rounded-md cursor-pointer hover:bg-primary/5 ${currentConversationId === c.id ? 'bg-primary/5' : ''}`}
+              className={`flex items-center justify-between p-2 rounded-md cursor-pointer interactive-card ${currentConversationId === c.id ? 'bg-primary/10 border border-primary/20' : 'hover:bg-primary/5'}`}
               onClick={() => loadConversation(c.id)}
             >
               <div className="flex items-center gap-3">
-                <div className="h-8 w-8 rounded-md bg-secondary/10 flex items-center justify-center text-sm font-medium">{c.title?.charAt(0) ?? 'C'}</div>
+                <div className="h-8 w-8 rounded-md bg-primary/10 text-primary flex items-center justify-center text-sm font-medium">{c.title?.charAt(0) ?? 'A'}</div>
                 <div className="text-sm">
                   <div className="font-medium truncate max-w-[180px]">{c.title || 'New chat'}</div>
                   <div className="text-xs text-muted-foreground">{new Date(c.updatedAt).toLocaleString()}</div>
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); deleteConversation(c.id); }}>
+                <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); handleDeleteConversation(c.id); }}>
                   <Archive className="h-4 w-4" />
                 </Button>
               </div>
@@ -673,26 +743,37 @@ export default function Chat() {
         </div>
       </aside>
 
-      <main className="flex-1 flex flex-col">
+      <main className="flex-1 flex flex-col min-w-0">
         <div className="border-b bg-card/80 backdrop-blur-xl p-6 relative z-10 shadow-sm">
-          <div className="max-w-4xl mx-auto flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-primary to-chart-2 flex items-center justify-center shadow-lg shadow-primary/20">
-                <Sparkles className="h-6 w-6 text-primary-foreground" />
+          <div className="max-w-4xl mx-auto flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-4 min-w-0">
+              <div className="h-12 w-12 rounded-lg bg-primary agent-mark flex items-center justify-center shadow-md shadow-primary/20">
+                <Bot className="h-6 w-6 text-primary-foreground relative z-10" />
               </div>
-              <div>
+              <div className="min-w-0">
                 <h1 className="text-2xl font-bold bg-gradient-to-r from-primary to-chart-2 bg-clip-text text-transparent" data-testid="text-page-title">
-                  Chat with Coolie
+                  Chat with AgentCoolie
                 </h1>
-                <p className="text-sm text-muted-foreground">Your AI assistant is here to help</p>
+                <p className="text-sm text-muted-foreground">Memory-aware chat with live web search</p>
               </div>
             </div>
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-4 justify-between sm:justify-end">
+              <div className="hidden lg:flex items-center gap-2 text-xs">
+                <span className="inline-flex items-center gap-1 rounded-md border bg-primary/10 px-2.5 py-1 text-primary">
+                  <Search className="h-3.5 w-3.5" /> Web
+                </span>
+                <span className="inline-flex items-center gap-1 rounded-md border bg-chart-3/10 px-2.5 py-1 text-chart-3">
+                  <Brain className="h-3.5 w-3.5" /> Memory
+                </span>
+                <span className="inline-flex items-center gap-1 rounded-md border bg-chart-4/10 px-2.5 py-1 text-chart-4">
+                  <Radio className="h-3.5 w-3.5" /> Live
+                </span>
+              </div>
               {messages.length > 0 && (
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={clearMessages}
+                  onClick={handleClearMessages}
                   data-testid="button-clear-chat"
                   className="hover:bg-destructive/10 hover:text-destructive transition-all duration-300"
                 >
@@ -700,24 +781,6 @@ export default function Chat() {
                   Clear Chat
                 </Button>
               )}
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={toggleChatMode}
-                data-testid="button-chat-mode"
-              >
-                {isInvestigateMode ? (
-                  <>
-                    <Search className="h-4 w-4 mr-2" />
-                    {investigateType === 'pdf' ? 'PDF Mode' : 'URL Mode'}
-                  </>
-                ) : (
-                  <>
-                    <MessageSquare className="h-4 w-4 mr-2" />
-                    Chat Mode
-                  </>
-                )}
-              </Button>
             </div>
           </div>
         </div>
@@ -727,21 +790,29 @@ export default function Chat() {
             {messages.length === 0 && (
               <div className="text-center py-20 animate-in fade-in slide-in-from-bottom-4 duration-700">
                 <div className="mb-6 inline-flex">
-                  <div className="h-20 w-20 rounded-2xl bg-gradient-to-br from-primary/20 to-chart-2/20 flex items-center justify-center">
-                    <Sparkles className="h-10 w-10 text-primary" />
+                  <div className="h-20 w-20 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center">
+                    <Bot className="h-10 w-10 text-primary soft-pulse rounded-lg" />
                   </div>
                 </div>
                 <h3 className="text-2xl font-semibold mb-2">Start a Conversation</h3>
                 <p className="text-muted-foreground max-w-md mx-auto">
-                  Ask Coolie anything! I'm here to help you with tasks, questions, and much more.
+                  Ask AgentCoolie for current news, task planning, remembered context, or workflow help.
                 </p>
                 <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-3 max-w-2xl mx-auto">
-                  <div className="p-4 rounded-xl bg-card border hover:border-primary/50 transition-all duration-300 cursor-pointer hover:shadow-lg group">
+                  <button
+                    type="button"
+                    onClick={() => handleSendMessage("What can you help me with?")}
+                    className="p-4 rounded-xl bg-card border hover:border-primary/50 transition-all duration-300 cursor-pointer hover:shadow-lg group text-left hover-lift"
+                  >
                     <p className="text-sm font-medium group-hover:text-primary transition-colors">What can you help me with?</p>
-                  </div>
-                  <div className="p-4 rounded-xl bg-card border hover:border-primary/50 transition-all duration-300 cursor-pointer hover:shadow-lg group">
-                    <p className="text-sm font-medium group-hover:text-primary transition-colors">Show me my tasks for today</p>
-                  </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSendMessage("Search web for recent Tamil Nadu politics news")}
+                    className="p-4 rounded-xl bg-card border hover:border-primary/50 transition-all duration-300 cursor-pointer hover:shadow-lg group text-left hover-lift"
+                  >
+                    <p className="text-sm font-medium group-hover:text-primary transition-colors">Search web for recent Tamil Nadu politics news</p>
+                  </button>
                 </div>
               </div>
             )}
@@ -767,8 +838,6 @@ export default function Chat() {
         <ChatInput 
           onSend={handleSendMessage} 
           disabled={isTyping} 
-          investigateMode={isInvestigateMode}
-          investigateType={investigateType}
         />
       </main>
     </div>

@@ -15,6 +15,9 @@ export function ChatBubble({ message, userName, userAvatar }: ChatBubbleProps) {
     hour: "numeric",
     minute: "2-digit",
   });
+  const displayContent = isUser
+    ? message.content
+    : message.content?.replace(/\bCoolieAssistant\b/g, "AgentCoolie");
 
   return (
     <div
@@ -44,7 +47,7 @@ export function ChatBubble({ message, userName, userAvatar }: ChatBubbleProps) {
       <div className={cn("flex flex-col gap-2", isUser ? "items-end" : "items-start")}>
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium text-muted-foreground">
-            {isUser ? userName : "Coolie"}
+            {isUser ? userName : "AgentCoolie"}
           </span>
           {/* show model badge for assistant messages when available */}
           {!isUser && (message as any).model && (
@@ -70,7 +73,7 @@ export function ChatBubble({ message, userName, userAvatar }: ChatBubbleProps) {
           )}
           <div className="relative z-10">
             <div className="text-[15px] leading-relaxed whitespace-pre-wrap break-words prose prose-sm dark:prose-invert max-w-none">
-                {renderMarkdown(message.content)}
+                {renderMarkdown(displayContent)}
               </div>
             {message.attachments && message.attachments.length > 0 && (
               <div className="mt-3 grid grid-cols-1 gap-2">

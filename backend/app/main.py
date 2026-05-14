@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from app.core.config import settings
+from app.services.call_task_scheduler import call_task_scheduler
 from app.routes import (
     auth_router,
     chat_router,
@@ -13,6 +14,11 @@ from app.routes import (
     website_router,
     youtube_router,
     notifications_router,
+    reminders_router,
+    search_router,
+    preferences_router,
+    integrations_router,
+    oauth_router,
 )
 import logging
 
@@ -26,8 +32,8 @@ logger = logging.getLogger(__name__)
 
 # Create FastAPI application
 app = FastAPI(
-    title="CoolieAssistant",
-    description="AI-powered assistant with multi-channel integration",
+    title="AgentCoolie",
+    description="Memory-aware AI workspace with multi-channel integration",
     version="2.0.0",
 )
 
@@ -64,6 +70,11 @@ app.include_router(gmail_router)
 app.include_router(website_router)
 app.include_router(youtube_router)
 app.include_router(notifications_router)
+app.include_router(reminders_router)
+app.include_router(search_router)
+app.include_router(preferences_router)
+app.include_router(integrations_router)
+app.include_router(oauth_router)
 
 
 # Root endpoint
@@ -71,7 +82,7 @@ app.include_router(notifications_router)
 async def root() -> dict:
     """Root endpoint."""
     return {
-        "message": "CoolieAssistant API v2.0",
+        "message": "AgentCoolie API v2.0",
         "docs": "/docs",
         "health": "/health",
     }
@@ -81,16 +92,18 @@ async def root() -> dict:
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup."""
-    logger.info("Starting CoolieAssistant API...")
+    logger.info("Starting AgentCoolie API...")
     logger.info(f"Environment: {settings.ENV}")
     logger.info(f"CORS Origins: {settings.CORS_ORIGINS}")
+    call_task_scheduler.start()
 
 
 # Shutdown event
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown."""
-    logger.info("Shutting down CoolieAssistant API...")
+    logger.info("Shutting down AgentCoolie API...")
+    await call_task_scheduler.stop()
 
 
 if __name__ == "__main__":

@@ -1,3 +1,5 @@
+import { getFirebaseAuth } from "@/lib/firebase";
+
 /**
  * API client for FastAPI backend communication
  * Endpoints: http://localhost:8000 (development) or configured VITE_API_URL
@@ -23,16 +25,14 @@ export async function apiFetch(inputPath: string, init?: RequestInit): Promise<R
   const headers = new Headers(init?.headers || {});
   headers.set("Content-Type", "application/json");
 
-  const user = localStorage.getItem("user");
-  if (user) {
-    try {
-      const userData = JSON.parse(user);
-      if (userData.token) {
-        headers.set("Authorization", `Bearer ${userData.token}`);
-      }
-    } catch (e) {
-      // Token parsing failed, continue without auth
+  try {
+    const auth = getFirebaseAuth();
+    const token = await auth?.currentUser?.getIdToken();
+    if (token) {
+      headers.set("Authorization", `Bearer ${token}`);
     }
+  } catch (e) {
+    // Continue without auth; protected routes will return 401.
   }
 
   const request: RequestInit = {
@@ -48,6 +48,7 @@ export async function apiFetch(inputPath: string, init?: RequestInit): Promise<R
 export async function verifyToken(token: string) {
   const response = await apiFetch("/api/auth/verify", {
     method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ token }),
   });
   return response.json();
@@ -55,10 +56,10 @@ export async function verifyToken(token: string) {
 
 // ============ Chat ============
 
-export async function sendChatMessage(content: string, attachments?: any[]) {
+export async function sendChatMessage(content: string, attachments?: any[], conversationId?: string) {
   const response = await apiFetch("/api/chat/message", {
     method: "POST",
-    body: JSON.stringify({ content, attachments }),
+    body: JSON.stringify({ content, attachments, conversationId }),
   });
   if (!response.ok) throw new Error(`API error: ${response.statusText}`);
   return response.json();
@@ -84,7 +85,7 @@ export async function analyzeSentiment(content: string) {
 export async function createTask(taskData: {
   title: string;
   description?: string;
-  type: "gmail" | "whatsapp" | "reminder" | "youtube";
+  type: "general" | "gmail" | "whatsapp" | "reminder" | "youtube";
   priority?: "low" | "medium" | "high";
   due_date?: string;
 }) {

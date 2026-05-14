@@ -4,7 +4,7 @@ import { Globe, Link as LinkIcon, Search } from "lucide-react";
 
 export default function Website() {
   return (
-    <div className="h-full overflow-auto bg-gradient-to-br from-background via-primary/5 to-chart-2/5">
+    <div className="h-full overflow-auto app-surface">
       <div className="max-w-4xl mx-auto p-6 space-y-8">
         <div className="space-y-4">
           <h1 className="text-3xl font-bold">Website Browser</h1>

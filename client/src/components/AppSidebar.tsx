@@ -9,7 +9,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
-import { Home, MessageSquare, CheckSquare, Settings, Sparkles, LogOut } from "lucide-react";
+import { Home, MessageSquare, CheckSquare, Settings, Sparkles, LogOut, Bot, Info } from "lucide-react";
 import { useLocation } from "wouter";
 import { useAuth } from "@/contexts/AuthContext";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -20,6 +20,7 @@ const menuItems = [
   { title: "Home", url: "/", icon: Home, gradient: "from-primary/10 to-chart-1/10" },
   { title: "Chat", url: "/chat", icon: MessageSquare, gradient: "from-chart-1/10 to-chart-2/10" },
   { title: "Tasks", url: "/tasks", icon: CheckSquare, gradient: "from-chart-3/10 to-chart-4/10" },
+  { title: "About", url: "/about", icon: Info, gradient: "from-primary/10 to-chart-5/10" },
   { title: "Personalization", url: "/personalization", icon: Sparkles, gradient: "from-chart-2/10 to-primary/10" },
   { title: "Settings", url: "/settings", icon: Settings, gradient: "from-chart-4/10 to-chart-5/10" },
 ];
@@ -29,19 +30,19 @@ export function AppSidebar() {
   const { user, signOut } = useAuth();
 
   return (
-    <Sidebar className="border-r-2">
-      <div className="absolute inset-0 bg-gradient-to-b from-primary/5 via-transparent to-chart-2/5 pointer-events-none" />
+    <Sidebar className="border-r shadow-sm">
+      <div className="absolute inset-0 bg-gradient-to-b from-primary/8 via-sidebar to-sidebar pointer-events-none" />
       
       <SidebarHeader className="p-6 relative">
         <div className="flex items-center gap-3 group cursor-pointer">
-          <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-primary to-chart-2 flex items-center justify-center shadow-lg shadow-primary/20 group-hover:shadow-primary/40 transition-all duration-300 group-hover:scale-110">
-            <Sparkles className="h-5 w-5 text-primary-foreground" />
+          <div className="h-10 w-10 rounded-lg bg-primary agent-mark flex items-center justify-center shadow-md shadow-primary/20 group-hover:shadow-primary/40 transition-all duration-300 group-hover:scale-105">
+            <Bot className="h-5 w-5 text-primary-foreground relative z-10" />
           </div>
-          <span className="font-bold text-xl bg-gradient-to-r from-primary to-chart-2 bg-clip-text text-transparent">
-            Coolie
+          <span className="font-bold text-xl text-sidebar-foreground">
+            AgentCoolie
           </span>
         </div>
-        <p className="text-xs text-muted-foreground mt-2 ml-13">Your AI Assistant</p>
+        <p className="text-xs text-sidebar-foreground/60 mt-2 ml-[52px]">AI command workspace</p>
       </SidebarHeader>
       
       <SidebarContent>
@@ -56,8 +57,8 @@ export function AppSidebar() {
                       asChild
                       isActive={isActive}
                       className={cn(
-                        "group relative overflow-hidden rounded-xl transition-all duration-300 hover:scale-[1.02]",
-                        isActive && "shadow-lg"
+                        "group relative overflow-hidden rounded-lg border border-transparent transition-all duration-300 hover:translate-x-1 hover:border-sidebar-border hover:shadow-sm",
+                        isActive && "bg-sidebar-accent shadow-sm border-sidebar-border"
                       )}
                       data-testid={`link-nav-${item.title.toLowerCase()}`}
                     >
@@ -69,7 +70,7 @@ export function AppSidebar() {
                         )} />
                         <item.icon className={cn(
                           "h-5 w-5 transition-all duration-300 relative z-10",
-                          isActive && "scale-110"
+                          isActive && "scale-110 text-primary"
                         )} />
                         <span className="font-medium relative z-10">{item.title}</span>
                       </a>
@@ -84,11 +85,11 @@ export function AppSidebar() {
       
       <SidebarFooter className="p-4 relative">
         <div className="space-y-4">
-          <div className="p-4 rounded-2xl bg-gradient-to-br from-primary/10 to-chart-2/10 border-2 border-primary/20 backdrop-blur-xl">
+          <div className="p-4 rounded-lg border border-sidebar-border bg-sidebar-accent/70">
             <div className="flex items-center gap-3 mb-3">
               <Avatar className="h-11 w-11 border-2 border-background shadow-lg">
                 <AvatarImage src={user?.photoURL || ""} alt={user?.displayName || "User"} />
-                <AvatarFallback className="bg-gradient-to-br from-primary to-chart-2 text-primary-foreground font-semibold">
+                <AvatarFallback className="bg-primary text-primary-foreground font-semibold">
                   {user?.displayName?.charAt(0).toUpperCase() || "U"}
                 </AvatarFallback>
               </Avatar>
@@ -96,7 +97,7 @@ export function AppSidebar() {
                 <p className="text-sm font-semibold truncate" data-testid="text-username">
                   {user?.displayName || "User"}
                 </p>
-                <p className="text-xs text-muted-foreground truncate">
+                <p className="text-xs text-sidebar-foreground/60 truncate">
                   {user?.email}
                 </p>
               </div>

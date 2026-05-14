@@ -83,6 +83,25 @@ async def open_website(request: WebsiteRequest) -> dict:
                 "opened": False,
                 "opened_in_system_browser": False
             }
+
+        # Handle common "open <site>" requests without a dot, e.g. "open amazon".
+        stop_words = {
+            "open", "go", "to", "visit", "show", "me", "navigate", "launch",
+            "website", "site", "link", "the", "a", "an", "can", "you", "u",
+            "please", "in", "browser",
+        }
+        tokens = re.findall(r"[a-zA-Z0-9-]+", query.lower())
+        candidates = [token for token in tokens if token not in stop_words]
+        if candidates:
+            site = candidates[-1]
+            final_url = f"https://www.{site}.com"
+            logger.info(f"Website endpoint: Inferred site name: {final_url}")
+            return {
+                "status": "success",
+                "final_url": final_url,
+                "opened": False,
+                "opened_in_system_browser": False
+            }
         
         # No URL found
         logger.debug(f"Website endpoint: No URL found in query: {query}")

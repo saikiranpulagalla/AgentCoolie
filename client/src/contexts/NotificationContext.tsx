@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import type { Task } from "@shared/schema";
 import { useAuth } from "@/contexts/AuthContext";
+import { apiFetch } from "@/lib/api";
 
 interface Notification {
   id: string;
@@ -28,7 +29,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       try {
         const token = await getIdToken?.();
         if (!token) return;
-        const res = await fetch('/api/notifications', { headers: { Authorization: `Bearer ${token}` } });
+        const res = await apiFetch('/api/notifications', { headers: { Authorization: `Bearer ${token}` } });
         if (!res.ok) return;
         const data = await res.json();
         if (Array.isArray(data)) {

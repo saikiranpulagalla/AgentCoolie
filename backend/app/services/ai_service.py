@@ -3,8 +3,10 @@ AI and embedding services.
 """
 
 import logging
-from typing import Optional, List
+from typing import Any, Optional, List
 from app.core.config import settings
+from app.services.runtime_config_service import runtime_config_service
+from app.services.tracing_service import traceable
 
 logger = logging.getLogger(__name__)
 
@@ -17,17 +19,7 @@ class EmbeddingService:
         self.provider = settings.EMBEDDING_PROVIDER
         self.client = None
 
-        if self.provider == "cohere":
-            try:
-                import cohere
-                self.client = cohere.Client(api_key=settings.COHERE_API_KEY)
-                logger.info("Cohere embedding provider initialized")
-            except ImportError:
-                logger.warning("Cohere not installed - embeddings will not work")
-            except Exception as e:
-                logger.warning(f"Failed to initialize Cohere: {e}")
-
-        elif self.provider == "google":
+        if self.provider == "google":
             try:
                 import google.generativeai as genai
                 genai.configure(api_key=settings.GOOGLE_AI_API_KEY)
@@ -58,11 +50,7 @@ class EmbeddingService:
             Embedding vector
         """
         try:
-            if self.provider == "cohere":
-                response = self.client.embed(texts=[text], model="embed-english-v3.0", input_type="search_document")
-                return response.embeddings[0]
-
-            elif self.provider == "google":
+            if self.provider == "google":
                 import google.generativeai as genai
                 response = genai.embed_content(model="models/embedding-001", content=text)
                 return response["embedding"]
@@ -86,11 +74,7 @@ class EmbeddingService:
             List of embedding vectors
         """
         try:
-            if self.provider == "cohere":
-                response = self.client.embed(texts=texts, model="embed-english-v3.0", input_type="search_document")
-                return response.embeddings
-
-            elif self.provider == "google":
+            if self.provider == "google":
                 import google.generativeai as genai
                 embeddings = []
                 for text in texts:
@@ -116,6 +100,9 @@ class GeminiService:
         self.vision_model = None
         self.model_name = settings.GEMINI_MODEL
         self.vision_model_name = settings.GEMINI_VISION_MODEL
+        self.google_api_keys = [
+            key for key in [settings.GOOGLE_AI_API_KEY, settings.GOOGLE_AI_API_FALLBACK_KEY] if key
+        ]
         
         try:
             import google.generativeai as genai
@@ -128,6 +115,62 @@ class GeminiService:
         except Exception as e:
             logger.warning(f"Failed to initialize Gemini: {e}")
 
+    async def _google_api_keys(self) -> list[str]:
+        values = await runtime_config_service.get_secrets(
+            ["GOOGLE_AI_API_KEY", "GOOGLE_AI_API_FALLBACK_KEY"]
+        )
+        return [
+            key for key in [
+                values.get("GOOGLE_AI_API_KEY"),
+                values.get("GOOGLE_AI_API_FALLBACK_KEY"),
+            ] if key
+        ]
+
+    def _generate_with_google(self, model_name: str, content: Any, api_keys: list[str]) -> str:
+        """Try configured Google API keys in order."""
+        if not api_keys:
+            raise RuntimeError("No Google AI API keys configured")
+
+        last_error: Exception | None = None
+        import google.generativeai as genai
+
+        for index, api_key in enumerate(api_keys):
+            try:
+                genai.configure(api_key=api_key)
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(content)
+                return response.text
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Google AI key #{index + 1} failed: {e}")
+
+        raise last_error or RuntimeError("Google AI generation failed")
+
+    async def _generate_with_groq(self, prompt: str) -> str:
+        """Fallback text generation through Groq's OpenAI-compatible API."""
+        groq_api_key = await runtime_config_service.get_secret("GROQ_API_KEY")
+        groq_model = await runtime_config_service.get_secret("GROQ_MODEL", settings.GROQ_MODEL)
+        if not groq_api_key:
+            raise RuntimeError("No Groq API key configured")
+
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(
+                api_key=groq_api_key,
+                base_url="https://api.groq.com/openai/v1",
+            )
+            response = client.chat.completions.create(
+                model=groq_model or settings.GROQ_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+            )
+            return response.choices[0].message.content or ""
+        except Exception as e:
+            logger.warning(f"Groq fallback failed: {e}")
+            raise
+
+    @traceable(name="llm.analyze_text", run_type="llm")
     async def analyze_text(self, text: str, prompt: Optional[str] = None) -> str:
         """
         Analyze text with Gemini.
@@ -140,16 +183,18 @@ class GeminiService:
             Analysis result
         """
         try:
-            import google.generativeai as genai
-            model = genai.GenerativeModel(self.model_name)
             # Use the prompt as-is if provided, otherwise use the text
             full_prompt = prompt if prompt else text
-            response = model.generate_content(full_prompt)
-            return response.text
+            try:
+                return self._generate_with_google(self.model_name, full_prompt, await self._google_api_keys())
+            except Exception as google_error:
+                logger.error(f"Google AI text generation failed across configured keys: {google_error}")
+                return await self._generate_with_groq(full_prompt)
         except Exception as e:
             logger.error(f"Failed to analyze text: {e}")
             raise
 
+    @traceable(name="llm.analyze_image", run_type="llm")
     async def analyze_image(self, image_base64: str, prompt: Optional[str] = None) -> str:
         """
         Analyze image with Gemini.
@@ -163,20 +208,121 @@ class GeminiService:
         """
         try:
             import google.generativeai as genai
-            from PIL import Image
+            try:
+                from PIL import Image
+            except ImportError as e:
+                raise RuntimeError("Image analysis requires Pillow. Install backend requirements and restart the server.") from e
             import io
             import base64
 
-            model = genai.GenerativeModel(self.vision_model_name)
             image_data = base64.b64decode(image_base64)
             image = Image.open(io.BytesIO(image_data))
 
             full_prompt = prompt or "What's in this image?"
-            response = model.generate_content([full_prompt, image])
-            return response.text
+            return self._generate_with_google(self.vision_model_name, [full_prompt, image], await self._google_api_keys())
         except Exception as e:
             logger.error(f"Failed to analyze image: {e}")
             raise
+
+    @traceable(name="llm.analyze_audio", run_type="llm")
+    async def analyze_audio(
+        self,
+        audio_base64: str,
+        mime_type: str = "audio/webm",
+        prompt: Optional[str] = None,
+    ) -> str:
+        """
+        Analyze or answer a short audio recording with Gemini.
+
+        Args:
+            audio_base64: Base64 encoded audio bytes
+            mime_type: Audio MIME type from the upload
+            prompt: Optional user text/instruction to pair with the recording
+
+        Returns:
+            Model response
+        """
+        try:
+            import base64
+            import google.generativeai as genai
+
+            audio_data = base64.b64decode(audio_base64)
+            full_prompt = prompt or (
+                "Transcribe this audio message, then answer it as AgentCoolie. "
+                "If the user gives a command or asks a question, respond directly."
+            )
+            return self._generate_with_google(
+                self.model_name,
+                [
+                    full_prompt,
+                    {
+                        "mime_type": mime_type or "audio/webm",
+                        "data": audio_data,
+                    },
+                ],
+                await self._google_api_keys(),
+            )
+        except Exception as e:
+            logger.error(f"Failed to analyze audio: {e}")
+            raise
+
+    async def transcribe_audio(
+        self,
+        audio_base64: str,
+        mime_type: str = "audio/webm",
+    ) -> str:
+        """Transcribe an audio clip so the normal router can handle the user's intent."""
+        return await self.analyze_audio(
+            audio_base64,
+            mime_type=mime_type,
+            prompt=(
+                "Transcribe the user's audio message accurately. "
+                "Return only the spoken words, without commentary."
+            ),
+        )
+
+
+def extract_pdf_text_with_metadata(
+    pdf_base64: str,
+    max_chars: int = 50000,
+    max_pages: int = 25,
+) -> dict:
+    """Extract readable text and limits metadata from a base64 PDF attachment."""
+    try:
+        import base64
+        import io
+        from pypdf import PdfReader
+
+        pdf_bytes = base64.b64decode(pdf_base64)
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        parts: list[str] = []
+        page_count = len(reader.pages)
+        pages_read = min(page_count, max_pages)
+        for page in reader.pages[:pages_read]:
+            text = page.extract_text() or ""
+            if text.strip():
+                parts.append(text.strip())
+            if sum(len(part) for part in parts) >= max_chars:
+                break
+        text = "\n\n".join(parts)[:max_chars].strip()
+        return {
+            "text": text,
+            "page_count": page_count,
+            "pages_read": pages_read,
+            "max_pages": max_pages,
+            "max_chars": max_chars,
+            "truncated": page_count > pages_read or len("\n\n".join(parts)) > max_chars,
+        }
+    except ImportError as e:
+        raise RuntimeError("PDF analysis requires pypdf. Install backend requirements and restart the server.") from e
+    except Exception as e:
+        logger.error(f"Failed to extract PDF text: {e}")
+        raise
+
+
+def extract_pdf_text(pdf_base64: str, max_chars: int = 50000, max_pages: int = 25) -> str:
+    """Extract readable text from a base64 PDF attachment."""
+    return str(extract_pdf_text_with_metadata(pdf_base64, max_chars=max_chars, max_pages=max_pages).get("text") or "")
 
 
 # Service instances - initialize with error handling

@@ -41,6 +41,8 @@ class ChatMessageRequest(BaseModel):
     """Chat message request."""
     content: str
     attachments: Optional[List[dict]] = None
+    conversationId: Optional[str] = None
+    conversation_id: Optional[str] = None
 
 
 class ChatMessageResponse(BaseModel):
@@ -66,10 +68,12 @@ class TaskPriority(str, Enum):
 
 class TaskType(str, Enum):
     """Task types."""
+    GENERAL = "general"
     GMAIL = "gmail"
     WHATSAPP = "whatsapp"
     REMINDER = "reminder"
     YOUTUBE = "youtube"
+    WEBSITE = "website"
 
 
 class TaskCreate(BaseModel):
