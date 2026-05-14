@@ -2,7 +2,7 @@
 
 AgentCoolie is a personal AI agent application with authenticated chat, short-term Redis memory, long-term Supabase memory, task automation, Gmail tooling through n8n, web search, PDF/image/audio handling, WhatsApp access, and phone-call reminders for important tasks.
 
-This repository contains the production frontend, backend API, SQL schema files, and deployment/startup configuration. The prompt inspector is maintained as a separate debug companion repository: `https://github.com/Saikirankmit/prompt-inspector`.
+This repository contains the production frontend, backend API, SQL schema files, and deployment/startup configuration. 
 
 ## What AgentCoolie Does
 
@@ -332,6 +332,5 @@ After deployment:
 
 - Rotate secrets that were pasted into chats, terminals, screenshots, or docs.
 - Keep `.env` out of git. This repo ignores `.env`, `.env.local`, and environment-specific local files.
-- Keep prompt-inspector private. It can read chat messages, memory, pending tasks, and credential metadata through the service role.
 - Prefer adding provider credentials to `app_secrets` for runtime changes that should not require a redeploy.
 - Browser popup behavior differs by browser. The frontend now treats a null `window.open` result as unknown instead of claiming the tab was blocked.
