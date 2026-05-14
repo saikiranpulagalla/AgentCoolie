@@ -20,7 +20,9 @@ function initFirebaseAppIfNeeded() {
   const PROJECT_ID = (import.meta as any).env?.VITE_FIREBASE_PROJECT_ID ?? nodeEnv.VITE_FIREBASE_PROJECT_ID ?? nodeEnv.FIREBASE_PROJECT_ID;
   const APP_ID = (import.meta as any).env?.VITE_FIREBASE_APP_ID ?? nodeEnv.VITE_FIREBASE_APP_ID ?? nodeEnv.FIREBASE_APP_ID;
 
-  console.debug("Firebase env presence:", { apiKey: !!API_KEY, projectId: !!PROJECT_ID, appId: !!APP_ID });
+  if ((import.meta as any).env?.DEV) {
+    console.debug("Firebase env presence:", { apiKey: !!API_KEY, projectId: !!PROJECT_ID, appId: !!APP_ID });
+  }
 
   if (missing(API_KEY) || missing(PROJECT_ID) || missing(APP_ID)) {
     console.error("Missing Firebase environment variables for client runtime. Set VITE_FIREBASE_API_KEY, VITE_FIREBASE_PROJECT_ID and VITE_FIREBASE_APP_ID (see .env.example)");

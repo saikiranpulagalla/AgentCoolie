@@ -13,6 +13,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
 
+SUPABASE_UNREACHABLE_DETAIL = "Could not reach Supabase. Check internet/DNS and SUPABASE_URL in .env."
+
+
 def get_current_user(authorization: str = Header(None)) -> str:
     """Extract user ID from Firebase token in Authorization header."""
     if not authorization:
@@ -76,7 +79,9 @@ async def create_task(
         raise
     except Exception as e:
         logger.error(f"Failed to create task: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        if is_connectivity_error(e):
+            raise HTTPException(status_code=503, detail=SUPABASE_UNREACHABLE_DETAIL)
+        raise HTTPException(status_code=500, detail="Failed to create task")
 
 
 @router.post("/from-text")
@@ -131,7 +136,9 @@ async def create_task_from_text(
         raise
     except Exception as e:
         logger.error(f"Failed to create task from text: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        if is_connectivity_error(e):
+            raise HTTPException(status_code=503, detail=SUPABASE_UNREACHABLE_DETAIL)
+        raise HTTPException(status_code=500, detail="Failed to create task from text")
 
 
 @router.get("", response_model=list[Task])
@@ -151,10 +158,7 @@ async def get_tasks(user_id: str = Depends(get_current_user)) -> list[dict]:
     except Exception as e:
         logger.error(f"Failed to fetch tasks: {e}")
         if is_connectivity_error(e):
-            raise HTTPException(
-                status_code=503,
-                detail="Could not reach Supabase. Check internet/DNS and SUPABASE_URL in .env.",
-            )
+            raise HTTPException(status_code=503, detail=SUPABASE_UNREACHABLE_DETAIL)
         raise HTTPException(status_code=500, detail="Failed to fetch tasks")
 
 
@@ -165,8 +169,7 @@ async def get_task(
 ) -> dict:
     """Get a specific task."""
     try:
-        tasks = await supabase_service.get_tasks(user_id)
-        task = next((t for t in tasks if t.get("id") == task_id), None)
+        task = await supabase_service.get_task(task_id, user_id=user_id)
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
         return task
@@ -174,7 +177,9 @@ async def get_task(
         raise
     except Exception as e:
         logger.error(f"Failed to fetch task: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        if is_connectivity_error(e):
+            raise HTTPException(status_code=503, detail=SUPABASE_UNREACHABLE_DETAIL)
+        raise HTTPException(status_code=500, detail="Failed to fetch task")
 
 
 @router.put("/{task_id}", response_model=Task)
@@ -215,7 +220,9 @@ async def update_task(
         raise
     except Exception as e:
         logger.error(f"Failed to update task: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        if is_connectivity_error(e):
+            raise HTTPException(status_code=503, detail=SUPABASE_UNREACHABLE_DETAIL)
+        raise HTTPException(status_code=500, detail="Failed to update task")
 
 
 @router.delete("/{task_id}")
@@ -233,4 +240,6 @@ async def delete_task(
         raise
     except Exception as e:
         logger.error(f"Failed to delete task: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        if is_connectivity_error(e):
+            raise HTTPException(status_code=503, detail=SUPABASE_UNREACHABLE_DETAIL)
+        raise HTTPException(status_code=500, detail="Failed to delete task")

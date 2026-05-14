@@ -13,11 +13,13 @@ from app.services import (
     plan_service,
 )
 from app.core.config import settings
+from app.services.supabase_service import is_connectivity_error
 from datetime import datetime, timedelta, timezone
 import logging
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+SUPABASE_UNREACHABLE_DETAIL = "Could not reach Supabase. Check internet/DNS and SUPABASE_URL in .env."
 
 
 def get_current_user(authorization: str = Header(None)) -> str:
@@ -79,7 +81,9 @@ async def send_message(
         raise
     except Exception as e:
         logger.error(f"Chat message failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        if is_connectivity_error(e):
+            raise HTTPException(status_code=503, detail=SUPABASE_UNREACHABLE_DETAIL)
+        raise HTTPException(status_code=500, detail="Chat message failed")
 
 
 @router.delete("/conversations/{conversation_id}/memory")
@@ -152,7 +156,9 @@ async def get_chat_history(
         return messages
     except Exception as e:
         logger.error(f"Failed to fetch chat history: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        if is_connectivity_error(e):
+            raise HTTPException(status_code=503, detail=SUPABASE_UNREACHABLE_DETAIL)
+        raise HTTPException(status_code=500, detail="Failed to fetch chat history")
 
 
 @router.post("/analyze-sentiment")

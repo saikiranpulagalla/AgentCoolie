@@ -28,6 +28,14 @@ logger = logging.getLogger(__name__)
 _sse_connect_ids: dict[str, dict] = {}
 SSE_CONNECT_TTL_SECONDS = 300
 SSE_MAX_IDS_PER_USER = 5
+SUPABASE_UNREACHABLE_DETAIL = "Could not reach Supabase. Check internet/DNS and SUPABASE_URL in .env."
+
+
+def _storage_http_exception(operation: str, error: Exception) -> HTTPException:
+    logger.error(f"Failed to {operation}: {error}")
+    if is_connectivity_error(error):
+        return HTTPException(status_code=503, detail=SUPABASE_UNREACHABLE_DETAIL)
+    return HTTPException(status_code=500, detail=f"Failed to {operation}")
 
 
 def get_current_user(authorization: str = Header(None)) -> str:
@@ -128,10 +136,7 @@ async def get_reminders(user_id: str = Depends(get_current_user)) -> list[dict]:
     except Exception as e:
         logger.error(f"Failed to fetch reminders: {e}")
         if is_connectivity_error(e):
-            raise HTTPException(
-                status_code=503,
-                detail="Could not reach Supabase. Check internet/DNS and SUPABASE_URL in .env.",
-            )
+            raise HTTPException(status_code=503, detail=SUPABASE_UNREACHABLE_DETAIL)
         raise HTTPException(status_code=500, detail="Failed to fetch reminders")
     return [_task_to_reminder(task) for task in tasks]
 
@@ -215,10 +220,7 @@ async def create_reminder(
         error_text = str(e)
         logger.error(f"Failed to create reminder task: {e}")
         if is_connectivity_error(e):
-            raise HTTPException(
-                status_code=503,
-                detail="Could not reach Supabase. Check internet/DNS and SUPABASE_URL in .env.",
-            )
+            raise HTTPException(status_code=503, detail=SUPABASE_UNREACHABLE_DETAIL)
         raise HTTPException(status_code=500, detail="Failed to create reminder")
 
     return _task_to_reminder(task)
@@ -243,7 +245,10 @@ async def update_reminder(
     if "last_attempt_at" in request:
         updates["last_attempt_at"] = request.get("last_attempt_at")
     if "notify_by_call" in request or "call_phone" in request:
-        task = await supabase_service.get_task(reminder_id, user_id=user_id)
+        try:
+            task = await supabase_service.get_task(reminder_id, user_id=user_id)
+        except Exception as e:
+            raise _storage_http_exception("load reminder", e)
         if not task:
             raise HTTPException(status_code=404, detail="Reminder not found")
         metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
@@ -285,7 +290,10 @@ async def update_reminder(
     if not updates:
         raise HTTPException(status_code=400, detail="No supported updates supplied")
 
-    task = await supabase_service.update_task(reminder_id, user_id=user_id, **updates)
+    try:
+        task = await supabase_service.update_task(reminder_id, user_id=user_id, **updates)
+    except Exception as e:
+        raise _storage_http_exception("update reminder", e)
     if not task:
         raise HTTPException(status_code=404, detail="Reminder not found")
 
@@ -309,7 +317,10 @@ async def delete_reminder(
     user_id: str = Depends(get_current_user),
 ) -> dict:
     """Delete a reminder."""
-    deleted = await supabase_service.delete_task(reminder_id, user_id=user_id)
+    try:
+        deleted = await supabase_service.delete_task(reminder_id, user_id=user_id)
+    except Exception as e:
+        raise _storage_http_exception("delete reminder", e)
     if not deleted:
         raise HTTPException(status_code=404, detail="Reminder not found")
     return {"status": "success", "message": "Reminder deleted"}
@@ -321,7 +332,10 @@ async def execute_reminder(
     user_id: str = Depends(get_current_user),
 ) -> dict:
     """Execute a due task through the backend/tool layer and persist status."""
-    task = await supabase_service.get_task(reminder_id, user_id=user_id)
+    try:
+        task = await supabase_service.get_task(reminder_id, user_id=user_id)
+    except Exception as e:
+        raise _storage_http_exception("load reminder", e)
     if not task:
         raise HTTPException(status_code=404, detail="Reminder not found")
 
@@ -333,16 +347,22 @@ async def execute_reminder(
             "action": {},
         }
 
-    claim = await supabase_service.claim_pending_task(
-        reminder_id,
-        user_id=user_id,
-        status="calling",
-        completed=False,
-        execution_message="Task is being executed by AgentCoolie.",
-        last_attempt_at=datetime.now().astimezone().isoformat(),
-    )
+    try:
+        claim = await supabase_service.claim_pending_task(
+            reminder_id,
+            user_id=user_id,
+            status="calling",
+            completed=False,
+            execution_message="Task is being executed by AgentCoolie.",
+            last_attempt_at=datetime.now().astimezone().isoformat(),
+        )
+    except Exception as e:
+        raise _storage_http_exception("claim reminder execution", e)
     if not claim:
-        latest = await supabase_service.get_task(reminder_id, user_id=user_id) or task
+        try:
+            latest = await supabase_service.get_task(reminder_id, user_id=user_id) or task
+        except Exception as e:
+            raise _storage_http_exception("load reminder", e)
         return {
             "status": "already_handled",
             "task": _task_to_reminder(latest),
@@ -425,6 +445,8 @@ async def execute_reminder(
         return {"status": "success", "task": _task_to_reminder(updated), "action": action}
 
     except Exception as e:
+        if is_connectivity_error(e):
+            raise HTTPException(status_code=503, detail=SUPABASE_UNREACHABLE_DETAIL)
         error_message = str(e)[:500]
         metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
         if call_reminder_service.task_wants_call(task):
@@ -436,15 +458,18 @@ async def execute_reminder(
                 "call_provider_status": getattr(e, "provider_status", None),
                 "call_more_info": getattr(e, "more_info", None),
             }
-        updated = await supabase_service.update_task(
-            reminder_id,
-            user_id=user_id,
-            status="failed",
-            completed=False,
-            execution_message=error_message,
-            last_attempt_at=datetime.now().astimezone().isoformat(),
-            metadata=metadata,
-        )
+        try:
+            updated = await supabase_service.update_task(
+                reminder_id,
+                user_id=user_id,
+                status="failed",
+                completed=False,
+                execution_message=error_message,
+                last_attempt_at=datetime.now().astimezone().isoformat(),
+                metadata=metadata,
+            )
+        except Exception as storage_error:
+            raise _storage_http_exception("record reminder failure", storage_error)
         return {"status": "failed", "task": _task_to_reminder(updated), "error": error_message}
 
 

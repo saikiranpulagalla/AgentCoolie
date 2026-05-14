@@ -92,6 +92,32 @@ def _enforce_upload_size(name: str, byte_count: int) -> None:
         )
 
 
+def _max_request_body_bytes() -> int:
+    max_upload_bytes = int(settings.MAX_UPLOAD_BYTES or 0)
+    if max_upload_bytes <= 0:
+        return 0
+    max_count = max(1, int(settings.MAX_ATTACHMENT_COUNT or 1))
+    return (max_upload_bytes * max_count) + (1024 * 1024)
+
+
+def _enforce_request_content_length(request: Request) -> None:
+    raw_content_length = request.headers.get("content-length")
+    if not raw_content_length:
+        return
+    try:
+        content_length = int(raw_content_length)
+    except ValueError:
+        return
+
+    max_bytes = _max_request_body_bytes()
+    if max_bytes > 0 and content_length > max_bytes:
+        max_mb = max_bytes / (1024 * 1024)
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Request body is too large. Maximum request size is {max_mb:.0f} MB.",
+        )
+
+
 async def _get_preferences_for_prompt(user_id: str) -> dict | None:
     try:
         return await supabase_service.get_preferences(user_id)
@@ -272,6 +298,7 @@ async def webhook_proxy(
     try:
         # Detect content type
         content_type = request.headers.get("content-type", "")
+        _enforce_request_content_length(request)
         
         if "application/json" in content_type:
             # JSON request
@@ -377,8 +404,8 @@ async def webhook_proxy(
             image_url = str(image_attachment.get("url", ""))
             image_base64 = image_url.split(",", 1)[1] if "," in image_url else image_url
             image_size = _estimated_base64_size(image_base64)
-            await plan_service.consume_upload(user_id, "image", image_size)
             _enforce_upload_size(str(image_attachment.get("name") or "Image"), image_size)
+            await plan_service.consume_upload(user_id, "image", image_size)
             image_summary = await gemini_service.analyze_image(
                 image_base64,
                 prompt=f"Describe the image and extract any text relevant to this user request: {message}",
@@ -386,8 +413,8 @@ async def webhook_proxy(
             attachment_context.append(f"Image analysis: {image_summary}")
         if image_file and gemini_service:
             image_bytes = await image_file.read()
-            await plan_service.consume_upload(user_id, "image", len(image_bytes))
             _enforce_upload_size(str(getattr(image_file, "filename", None) or "Image"), len(image_bytes))
+            await plan_service.consume_upload(user_id, "image", len(image_bytes))
             image_base64 = base64.b64encode(image_bytes).decode("ascii")
             image_summary = await gemini_service.analyze_image(
                 image_base64,
@@ -398,8 +425,8 @@ async def webhook_proxy(
             pdf_url = str(pdf_attachment.get("url", ""))
             pdf_base64 = pdf_url.split(",", 1)[1] if "," in pdf_url else pdf_url
             pdf_size = _estimated_base64_size(pdf_base64)
-            plan = await plan_service.consume_upload(user_id, "pdf", pdf_size)
             _enforce_upload_size(str(pdf_attachment.get("name") or "PDF"), pdf_size)
+            plan = await plan_service.consume_upload(user_id, "pdf", pdf_size)
             max_pages = int(plan.get("caps", {}).get("max_pdf_pages") or 25)
             pdf_info = extract_pdf_text_with_metadata(pdf_base64, max_pages=max_pages)
             pdf_text = str(pdf_info.get("text") or "")
@@ -422,8 +449,8 @@ async def webhook_proxy(
                 attachment_context.append(f"PDF text excerpt ({limit_note}): {pdf_text}")
         if pdf_file:
             pdf_bytes = await pdf_file.read()
-            plan = await plan_service.consume_upload(user_id, "pdf", len(pdf_bytes))
             _enforce_upload_size(str(getattr(pdf_file, "filename", None) or "PDF"), len(pdf_bytes))
+            plan = await plan_service.consume_upload(user_id, "pdf", len(pdf_bytes))
             pdf_base64 = base64.b64encode(pdf_bytes).decode("ascii")
             max_pages = int(plan.get("caps", {}).get("max_pdf_pages") or 25)
             pdf_info = extract_pdf_text_with_metadata(pdf_base64, max_pages=max_pages)
@@ -447,8 +474,8 @@ async def webhook_proxy(
                 attachment_context.append(f"PDF text excerpt ({limit_note}): {pdf_text}")
         if audio_file and gemini_service:
             audio_bytes = await audio_file.read()
-            await plan_service.consume_upload(user_id, "audio", len(audio_bytes))
             _enforce_upload_size(str(getattr(audio_file, "filename", None) or "Audio"), len(audio_bytes))
+            await plan_service.consume_upload(user_id, "audio", len(audio_bytes))
             audio_base64 = base64.b64encode(audio_bytes).decode("ascii")
             try:
                 transcript = await gemini_service.transcribe_audio(

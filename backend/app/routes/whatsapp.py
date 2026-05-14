@@ -8,6 +8,7 @@ from app.models import WhatsappWebhookRequest
 from app.services import chat_workflow_service, supabase_service, firebase_service, plan_service
 from app.services.call_reminder_service import normalize_phone_number
 from app.services.runtime_config_service import runtime_config_service
+from app.services.supabase_service import is_connectivity_error
 from app.core.config import settings
 import asyncio
 import base64
@@ -330,4 +331,6 @@ async def send_whatsapp_message(
         raise
     except Exception as e:
         logger.error(f"Failed to send WhatsApp message: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        if is_connectivity_error(e):
+            raise HTTPException(status_code=503, detail="Could not reach Supabase.")
+        raise HTTPException(status_code=500, detail="Failed to send WhatsApp message")

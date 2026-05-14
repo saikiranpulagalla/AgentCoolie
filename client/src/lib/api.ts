@@ -89,7 +89,7 @@ export async function analyzeSentiment(content: string) {
 export async function createTask(taskData: {
   title: string;
   description?: string;
-  type: "general" | "gmail" | "whatsapp" | "reminder" | "youtube";
+  type: "general" | "gmail" | "whatsapp" | "reminder" | "youtube" | "website";
   priority?: "low" | "medium" | "high";
   due_date?: string;
 }) {

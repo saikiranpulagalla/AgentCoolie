@@ -31,6 +31,11 @@ interface ChatContextType {
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
 
 const STORAGE_PREFIX = "coolie:conversations";
+const debugLog = (...args: unknown[]) => {
+  if (import.meta.env.DEV) {
+    console.debug(...args);
+  }
+};
 
 function storageKeyFor(uid?: string | null) {
   try {
@@ -134,7 +139,7 @@ export function ChatProvider({
       const owner = userId ?? "guest";
       setLoadedStorageOwner(null);
       const loaded = loadFromStorageFor(userId ?? null);
-      console.debug('ChatProvider: initializing conversations for user', userId ?? 'none', 'loadedCount', loaded.length);
+      debugLog('ChatProvider: initializing conversations', { signedIn: Boolean(userId), loadedCount: loaded.length });
       setConversations(loaded);
       const nextCurrent = loaded.length ? loaded[loaded.length - 1].id : null;
       currentConversationIdRef.current = nextCurrent;

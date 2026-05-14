@@ -11,7 +11,7 @@ import aiohttp
 from app.core.config import settings
 from app.services.plan_service import plan_service
 from app.services.runtime_config_service import runtime_config_service
-from app.services.supabase_service import supabase_service
+from app.services.supabase_service import is_connectivity_error, supabase_service
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +201,13 @@ class N8NService:
             connected = bool(await supabase_service.get_credentials(user_id, "gmail"))
         except Exception as e:
             logger.warning(f"Could not check Gmail credentials for {user_id}: {e}")
+            if is_connectivity_error(e):
+                return {
+                    "configured": await self.is_configured(),
+                    "connected": False,
+                    "storage_error": True,
+                    "message": "Could not reach Supabase to check Gmail connection status.",
+                }
 
         configured = await self.is_configured()
         return {

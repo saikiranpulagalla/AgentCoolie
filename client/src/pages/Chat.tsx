@@ -11,6 +11,12 @@ import { apiFetch, getApiBase } from "@/lib/api";
 
 const WEBHOOK_URL = import.meta.env.VITE_CLIENT_WEBHOOK_URL || `${getApiBase()}/api/webhook/proxy`;
 
+const debugLog = (...args: unknown[]) => {
+  if (import.meta.env.DEV) {
+    console.debug(...args);
+  }
+};
+
 export default function Chat() {
   const { user, getIdToken } = useAuth();
   const {
@@ -342,7 +348,7 @@ export default function Chat() {
       const sentAt = userMessage.timestamp instanceof Date ? userMessage.timestamp.getTime() : now;
       const twoMinutes = 2 * 60 * 1000;
       if ((now - sentAt) > twoMinutes) {
-        console.debug('Message too old to send to webhook (skipping)', { now, sentAt });
+        debugLog('Message too old to send to webhook (skipping)', { now, sentAt });
       } else {
       // QUICK-PATH: try website opener before sending to external webhook.
       // Only run this quick-path for explicit website-opening requests or when a URL is present.
@@ -488,12 +494,19 @@ export default function Chat() {
                 if (a?.name) form.append(`attachment_${idx}_name`, a.name);
               }
             } catch (e) {
-              console.warn('Failed to append attachment', a, e);
+              console.warn('Failed to append attachment', {
+                hasName: Boolean(a?.name),
+                type: a?.type,
+                error: e,
+              });
             }
           });
         }
 
-        console.debug("Sending multipart webhook POST to", WEBHOOK_URL);
+        debugLog("Sending multipart webhook POST", {
+          url: WEBHOOK_URL,
+          attachmentCount: Array.isArray(attachments) ? attachments.length : 0,
+        });
         response = await fetch(WEBHOOK_URL, {
           method: 'POST',
           headers: authHeaders,
@@ -509,7 +522,11 @@ export default function Chat() {
           attachments: attachments ?? undefined,
         };
 
-        console.debug("Sending JSON webhook POST to", WEBHOOK_URL, "payload:", jsonPayload);
+        debugLog("Sending JSON webhook POST", {
+          url: WEBHOOK_URL,
+          hasAttachments: Array.isArray(attachments) && attachments.length > 0,
+          attachmentCount: Array.isArray(attachments) ? attachments.length : 0,
+        });
         response = await fetch(WEBHOOK_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...authHeaders },
@@ -697,7 +714,7 @@ export default function Chat() {
         const maybeHandled = (typeof data === 'object' && data && (data.handled || (Array.isArray(data) && data[0]?.handled))) || (typeof rawText === 'string' && rawText.includes('"handled"'));
         if (maybeHandled) {
           // If the webhook already returned the youtube video object, we prefer the client-side handling (which already showed the video)
-          console.debug('Webhook response indicated handled action, skipping assistant message to avoid duplicate');
+          debugLog('Webhook response indicated handled action, skipping assistant message to avoid duplicate');
           return;
         }
       } catch (e) {
@@ -717,7 +734,11 @@ export default function Chat() {
         } catch (e) {
           assistantContent = '(empty response)';
         }
-        console.warn('Unable to extract structured assistant text; showing raw payload for debugging. rawText:', rawText, 'data:', data, 'top:', top);
+        debugLog('Unable to extract structured assistant text; using fallback response shape', {
+          hasRawText: Boolean(rawText && rawText.trim()),
+          dataType: Array.isArray(data) ? 'array' : typeof data,
+          topType: Array.isArray(top) ? 'array' : typeof top,
+        });
       }
 
       // normalize whitespace/newlines (strip trailing newlines)
@@ -736,7 +757,7 @@ export default function Chat() {
       if (assistantMessage.content && assistantMessage.content !== '(empty response)') {
         addMessage(assistantMessage, targetConversationId);
       } else {
-        console.debug('Filtered out empty assistant response');
+        debugLog('Filtered out empty assistant response');
       }
     } catch (err) {
       console.error("Error sending message:", err);

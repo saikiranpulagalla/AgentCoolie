@@ -25,6 +25,12 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 
+const debugLog = (...args: unknown[]) => {
+  if (import.meta.env.DEV) {
+    console.debug(...args);
+  }
+};
+
 export default function Tasks() {
   const [filter, setFilter] = useState<"all" | "gmail" | "reminder" | "youtube" | "website">("all");
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -36,12 +42,12 @@ export default function Tasks() {
   useEffect(() => {
     // Only fetch reminders if user is authenticated
     if (!user) {
-      console.log('No user authenticated, skipping reminder fetch');
+      debugLog('No user authenticated, skipping reminder fetch');
       setLoading(false);
       return;
     }
 
-    console.log('User authenticated, fetching reminders for:', user.uid);
+    debugLog('User authenticated, fetching reminders');
     setLoading(true);
     setTasks([]);
     const cacheKey = `cached_reminders_${user.uid}`;
@@ -60,12 +66,12 @@ export default function Tasks() {
         // hydrate from cache first (per-user)
         try {
           const cached = localStorage.getItem(cacheKey);
-          console.log('Raw cached data from localStorage:', cached);
+          debugLog('Cached reminder data found:', Boolean(cached));
           if (cached) {
             const parsed = JSON.parse(cached) as any[];
-            console.log('Parsed cached data:', parsed);
+            debugLog('Parsed cached reminder count:', Array.isArray(parsed) ? parsed.length : 0);
             if (Array.isArray(parsed) && parsed.length > 0) {
-              console.log('Loading cached reminders:', parsed.length);
+              debugLog('Loading cached reminders:', parsed.length);
               const cachedTasks = parsed.map((d, i) => ({
                 id: d.id || `${d.created_at || d.createdAt || Date.now()}-${i}`,
                 title: (d.message || '').slice(0,40) || 'Reminder',
@@ -82,33 +88,34 @@ export default function Tasks() {
                 dueDate: d.datetime ? new Date(d.datetime) : undefined,
                 createdAt: new Date(d.created_at || d.createdAt || Date.now()),
               } as Task));
-              console.log('Mapped cached tasks:', cachedTasks);
+              debugLog('Mapped cached task count:', cachedTasks.length);
               setTasks(cachedTasks);
             } else {
-              console.log('No cached reminders found or empty array');
+              debugLog('No cached reminders found or empty array');
             }
           } else {
-            console.log('No cached data in localStorage');
+            debugLog('No cached data in localStorage');
           }
         } catch (e) {
           console.warn('Failed to read cached reminders', e);
         }
 
         if (!getIdToken) {
-          console.log('getIdToken not available');
+          debugLog('getIdToken not available');
           return;
         }
         const token = await getIdToken();
         if (!token) {
-          console.log('No token available');
+          debugLog('No token available');
           return;
         }
-        console.log('Fetching reminders from server...');
+        debugLog('Fetching reminders from server...');
         const resp = await apiFetch('/api/reminders', { headers: { Authorization: `Bearer ${token}` } });
-        console.log('API response status:', resp.status, resp.statusText);
+        debugLog('API response status:', resp.status, resp.statusText);
         if (!resp.ok) {
           const text = await resp.text().catch(() => '');
-          console.warn('/api/reminders failed', resp.status, text);
+          console.warn('/api/reminders failed', resp.status, resp.statusText);
+          debugLog('/api/reminders error body length:', text.length);
           // Keep existing tasks instead of wiping them on transient errors
           return;
         }
@@ -116,22 +123,24 @@ export default function Tasks() {
           console.error('Failed to parse /api/reminders JSON', e);
           return null;
         });
-        console.log('Raw API response data:', data);
+        debugLog('Reminder API returned data:', Boolean(data));
         if (!data) {
           // parsing failed or no data; leave existing tasks intact
           console.warn('No data returned from /api/reminders');
           return;
         }
 
-        const rows = Array.isArray(data) ? data : (Array.isArray((data as any).data) ? (data as any).data : []);
-        console.log('Processed rows from API:', rows);
+        const rows = Array.isArray(data) ? data : (Array.isArray((data as any).data) ? (data as any).data : null);
+        debugLog('Processed reminder row count:', Array.isArray(rows) ? rows.length : 0);
         if (!Array.isArray(rows)) {
-          console.warn('Unexpected /api/reminders response shape', data);
+          console.warn('Unexpected /api/reminders response shape', {
+            dataType: Array.isArray(data) ? 'array' : typeof data,
+          });
           // unexpected shape; do not clear existing tasks
           return;
         }
 
-        console.log('Received reminders from server:', rows.length);
+        debugLog('Received reminders from server:', rows.length);
 
             const mapped = rows.map((d: any, i: number) => ({
           id: d.id || `${d.created_at || d.createdAt || Date.now()}-${i}`,
@@ -156,12 +165,11 @@ export default function Tasks() {
         const map = new Map<string, Task>();
         for (const t of mapped) map.set(t.id, t);
         const final = Array.from(map.values());
-        console.log('Final tasks to set:', final);
-        console.log('Setting tasks count:', final.length);
+        debugLog('Setting tasks count:', final.length);
         setTasks(final);
         try {
           localStorage.setItem(cacheKey, JSON.stringify(rows));
-          console.log('Cached reminders to localStorage (per-user)');
+          debugLog('Cached reminders to localStorage (per-user)');
         } catch (e) {
           console.warn('Failed to cache reminders', e);
         }
@@ -199,20 +207,20 @@ export default function Tasks() {
         }
         const body = await resp.json();
         const connectId = body.connectId;
-        console.log('SSE connecting with connectId:', connectId);
+        debugLog('SSE connecting');
         
         sse = new EventSource(apiUrl(`/api/sse/stream/${connectId}`));
         
         sse.addEventListener("reminder", (ev: any) => {
           try {
-            console.log('SSE reminder received:', ev.data);
+            debugLog('SSE reminder received');
             const d = JSON.parse(ev.data);
             
             // Check if we already have this reminder to avoid duplicates
             setTasks((prev) => {
               const existing = prev.find(t => t.id === d.id);
               if (existing) {
-                console.log('Duplicate reminder ignored:', d.id);
+                debugLog('Duplicate reminder ignored:', d.id);
                 return prev;
               }
               
@@ -241,10 +249,10 @@ export default function Tasks() {
             
             // show browser notification
             if (Notification.permission === "granted") {
-              console.log('Showing browser notification for reminder:', d.message);
+              debugLog('Showing browser notification for reminder');
               new Notification("Reminder", { body: d.message });
             } else {
-              console.log('Browser notification permission not granted:', Notification.permission);
+              debugLog('Browser notification permission not granted:', Notification.permission);
             }
             // show in-app toast
             toast({ title: 'Reminder', description: d.message });
@@ -260,7 +268,7 @@ export default function Tasks() {
         });
         
         sse.addEventListener("open", () => {
-          console.log('SSE connection opened');
+          debugLog('SSE connection opened');
         });
         
       } catch (err) {
@@ -286,14 +294,14 @@ export default function Tasks() {
   useEffect(() => {
     if (typeof Notification !== 'undefined') {
       setNotificationPermission(Notification.permission);
-      console.log('Current notification permission:', Notification.permission);
+      debugLog('Current notification permission:', Notification.permission);
     } else {
-      console.log('Notification API not available');
+      debugLog('Notification API not available');
     }
   }, []);
 
   const requestNotificationPermission = async () => {
-    console.log('Requesting notification permission...');
+    debugLog('Requesting notification permission...');
     
     if (typeof Notification === 'undefined') {
       console.error('Notification API not available');
@@ -302,11 +310,11 @@ export default function Tasks() {
     }
     
     try {
-      console.log('Current permission before request:', Notification.permission);
+      debugLog('Current permission before request:', Notification.permission);
       
       // Check if we can request permission
       if (Notification.permission === 'denied') {
-        console.log('Permission already denied, cannot request again');
+        debugLog('Permission already denied, cannot request again');
         toast({ 
           title: 'Notifications blocked', 
           description: 'Notifications are blocked. Please enable them manually in your browser settings (click the lock icon in the address bar).', 
@@ -316,7 +324,7 @@ export default function Tasks() {
       }
       
       const permission = await Notification.requestPermission();
-      console.log('Permission request result:', permission);
+      debugLog('Permission request result:', permission);
       setNotificationPermission(permission);
       
       if (permission === 'granted') {
@@ -815,7 +823,10 @@ export default function Tasks() {
             <p className="text-muted-foreground max-w-md mx-auto mb-6">
               Create your first task to get started with organizing your work!
             </p>
-            <Button className="bg-primary text-primary-foreground hover:bg-primary/90">
+            <Button
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
+              onClick={() => setOpen(true)}
+            >
               <Plus className="h-4 w-4 mr-2" />
               Create Task
             </Button>

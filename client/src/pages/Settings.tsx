@@ -39,6 +39,7 @@ export default function Settings() {
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [planSummary, setPlanSummary] = useState<any>(null);
+  const [displayName, setDisplayName] = useState(user?.displayName || "");
 
   const clearGmailCredentialFlags = (uid?: string | null) => {
     try {
@@ -103,6 +104,10 @@ export default function Settings() {
       }
     })();
   }, [authLoading, user?.uid]);
+
+  useEffect(() => {
+    setDisplayName(user?.displayName || "");
+  }, [user?.displayName, user?.uid]);
 
   // On first mount: capture ?connected=gmail and persist to localStorage so refresh keeps state
   useEffect(() => {
@@ -302,19 +307,66 @@ export default function Settings() {
     language: "en",
   });
 
-  const handleSaveProfile = () => {
-    console.log("Saving profile");
-    toast({
-      title: "Profile updated",
-      description: "Your profile information has been saved.",
-    });
+  useEffect(() => {
+    if (!user?.uid) return;
+    try {
+      const raw = localStorage.getItem(`agentcoolie:app-preferences:${user.uid}`);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as Partial<UserPreferences>;
+      setPreferences((current) => ({
+        theme: saved.theme ?? current.theme,
+        notifications: typeof saved.notifications === "boolean" ? saved.notifications : current.notifications,
+        language: saved.language ?? current.language,
+      }));
+    } catch (e) {
+      console.warn("Failed to load app preferences", e);
+    }
+  }, [user?.uid]);
+
+  const handleSaveProfile = async () => {
+    try {
+      const auth = getFirebaseAuth();
+      const current = auth?.currentUser;
+      if (!current) {
+        throw new Error("You must be signed in to update your profile.");
+      }
+
+      const nextDisplayName = displayName.trim();
+      if (!nextDisplayName) {
+        throw new Error("Display name cannot be empty.");
+      }
+
+      const { updateProfile } = await import("firebase/auth");
+      await updateProfile(current, { displayName: nextDisplayName });
+      toast({
+        title: "Profile updated",
+        description: "Your display name has been saved.",
+      });
+    } catch (err: any) {
+      toast({
+        title: "Profile save failed",
+        description: err?.message || String(err),
+        variant: "destructive",
+      });
+    }
   };
 
   const handleSavePreferences = () => {
-    console.log("Saving preferences:", preferences);
+    try {
+      if (user?.uid) {
+        localStorage.setItem(`agentcoolie:app-preferences:${user.uid}`, JSON.stringify(preferences));
+      }
+    } catch (e) {
+      toast({
+        title: "Preferences save failed",
+        description: "Could not save preferences in this browser.",
+        variant: "destructive",
+      });
+      return;
+    }
     toast({
       title: "Preferences saved",
-      description: "Your settings have been updated.",
+      description: "Your app preferences have been saved on this device.",
     });
   };
 
@@ -352,9 +404,9 @@ export default function Settings() {
               <div className="flex items-center gap-6 p-6 rounded-2xl bg-gradient-to-br from-primary/5 to-chart-2/5 border-2 border-primary/10">
                 <div className="relative group">
                   <Avatar className="h-24 w-24 border-4 border-background shadow-xl">
-                    <AvatarImage src={previewUrl ?? user?.photoURL ?? ""} alt={user?.displayName || ""} />
+                    <AvatarImage src={previewUrl ?? user?.photoURL ?? ""} alt={displayName || user?.displayName || ""} />
                     <AvatarFallback className="text-3xl bg-gradient-to-br from-primary to-chart-2 text-primary-foreground">
-                      {user?.displayName?.charAt(0).toUpperCase() || "U"}
+                      {(displayName || user?.displayName)?.charAt(0).toUpperCase() || "U"}
                     </AvatarFallback>
                   </Avatar>
                   <input
@@ -442,7 +494,7 @@ export default function Settings() {
                   </label>
                 </div>
                 <div className="flex-1 space-y-2">
-                  <p className="font-bold text-2xl" data-testid="text-display-name">{user?.displayName}</p>
+                  <p className="font-bold text-2xl" data-testid="text-display-name">{displayName || user?.displayName}</p>
                   <p className="text-muted-foreground flex items-center gap-2">
                     <Globe className="h-4 w-4" />
                     {user?.email}
@@ -466,7 +518,8 @@ export default function Settings() {
                   </Label>
                   <Input
                     id="display-name"
-                    defaultValue={user?.displayName || ""}
+                    value={displayName}
+                    onChange={(event) => setDisplayName(event.target.value)}
                     data-testid="input-display-name"
                     className="transition-all duration-300 focus:ring-2 focus:ring-primary/50 bg-background/50"
                   />
@@ -803,7 +856,7 @@ export default function Settings() {
                     setWhatsappVerificationCode('');
                     await handleSaveWhatsappPhone('');
                   }}
-                  disabled={savingWhatsappPhone || !hasWhatsappPhone}
+                  disabled={savingWhatsappPhone || (!hasWhatsappPhone && !whatsappPhone)}
                 >
                   Disconnect
                 </Button>

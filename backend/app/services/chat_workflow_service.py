@@ -355,6 +355,13 @@ class ChatWorkflowService:
             tool_status = await n8n_service.gmail_status(user_id)
             if not tool_status.get("configured"):
                 return "Gmail automation is not configured on the backend yet.", "gmail", tool_status
+            if tool_status.get("storage_error"):
+                return (
+                    tool_status.get("message")
+                    or "Could not verify whether Gmail is connected right now. Please try again in a moment.",
+                    "gmail",
+                    tool_status,
+                )
             if not tool_status.get("connected"):
                 return "Gmail is not connected. Go to Settings and connect Gmail first, then ask me again.", "gmail", tool_status
 
@@ -516,6 +523,11 @@ class ChatWorkflowService:
                 tool_status = await n8n_service.gmail_status(user_id)
                 if not tool_status.get("configured"):
                     response = "Gmail automation is not configured on the backend yet."
+                elif tool_status.get("storage_error"):
+                    response = (
+                        tool_status.get("message")
+                        or "Could not verify whether Gmail is connected right now. Please try again in a moment."
+                    )
                 elif not tool_status.get("connected"):
                     response = "Gmail is not connected. Go to Settings and connect Gmail first, then ask me again."
                 else:

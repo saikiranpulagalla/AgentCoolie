@@ -72,14 +72,14 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
 
   useEffect(() => {
     // run diagnostics (log only)
-    console.log('=== MICROPHONE DIAGNOSTICS ===');
-    console.log('Protocol:', location.protocol);
-    console.log('Hostname:', location.hostname);
-    console.log('User Agent:', navigator.userAgent);
-    console.log('MediaDevices available:', !!navigator.mediaDevices);
-    console.log('getUserMedia available:', !!navigator.mediaDevices?.getUserMedia);
-    console.log('MediaRecorder available:', typeof (window as any).MediaRecorder !== 'undefined');
-    console.log('Microphone permission state:', permissionState);
+    if (!import.meta.env.DEV) return;
+    console.debug('=== MICROPHONE DIAGNOSTICS ===');
+    console.debug('Protocol:', location.protocol);
+    console.debug('Hostname:', location.hostname);
+    console.debug('MediaDevices available:', !!navigator.mediaDevices);
+    console.debug('getUserMedia available:', !!navigator.mediaDevices?.getUserMedia);
+    console.debug('MediaRecorder available:', typeof (window as any).MediaRecorder !== 'undefined');
+    console.debug('Microphone permission state:', permissionState);
   }, [permissionState]);
 
   const startListening = () => {

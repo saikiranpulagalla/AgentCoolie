@@ -177,7 +177,7 @@ class SupabaseService:
             return rows
         except Exception as e:
             logger.error(f"Failed to get messages for user {user_id}: {e}")
-            return []
+            raise
 
     # ============ Long-Term Memory Operations ============
     async def create_long_term_memory(
@@ -228,9 +228,7 @@ class SupabaseService:
             return response.data[0] if response.data else None
         except Exception as e:
             logger.error(f"Failed to find long-term memory duplicate: {e}")
-            if is_connectivity_error(e):
-                raise
-            return None
+            raise
 
     async def get_long_term_memories(self, user_id: str, limit: int = 20) -> List[Dict[str, Any]]:
         """Get the most important recent long-term memories for a user."""
@@ -249,9 +247,7 @@ class SupabaseService:
             return response.data
         except Exception as e:
             logger.error(f"Failed to get long-term memories for user {user_id}: {e}")
-            if is_connectivity_error(e):
-                raise
-            return []
+            raise
 
     async def count_long_term_memories(self, user_id: str) -> int:
         """Count durable memories for a user."""
@@ -309,9 +305,7 @@ class SupabaseService:
             return response.data
         except Exception as e:
             logger.error(f"Failed to get tasks for user {user_id}: {e}")
-            if is_connectivity_error(e):
-                raise
-            return []
+            raise
 
     async def count_active_tasks(self, user_id: str, notify_by_call: bool | None = None) -> int:
         """Count tasks still active for quota enforcement."""
@@ -353,9 +347,7 @@ class SupabaseService:
             return response.data
         except Exception as e:
             logger.error(f"Failed to get due pending tasks: {e}")
-            if is_connectivity_error(e):
-                raise
-            return []
+            raise
 
     async def get_task(self, task_id: str, user_id: str) -> Optional[Dict[str, Any]]:
         """Get a single task scoped to a user."""
@@ -373,9 +365,7 @@ class SupabaseService:
             return response.data[0] if response.data else None
         except Exception as e:
             logger.error(f"Failed to get task {task_id} for user {user_id}: {e}")
-            if is_connectivity_error(e):
-                raise
-            return None
+            raise
 
     async def update_task(self, task_id: str, user_id: str, **kwargs) -> Dict[str, Any]:
         """Update a task."""
@@ -427,7 +417,7 @@ class SupabaseService:
             return bool(response.data)
         except Exception as e:
             logger.error(f"Failed to delete task {task_id}: {e}")
-            return False
+            raise
 
     # ============ Preferences Operations ============
     async def get_preferences(self, user_id: str) -> Optional[Dict[str, Any]]:
@@ -439,9 +429,7 @@ class SupabaseService:
             return response.data[0] if response.data else None
         except Exception as e:
             logger.error(f"Failed to get preferences for user {user_id}: {e}")
-            if is_connectivity_error(e):
-                raise
-            return None
+            raise
 
     async def upsert_preferences(self, user_id: str, preferences: Dict[str, Any]) -> Dict[str, Any]:
         """Create or update user preferences."""
@@ -520,9 +508,7 @@ class SupabaseService:
             return response.data[0] if response.data else None
         except Exception as e:
             logger.error(f"Failed to get {cred_type} credentials for user {user_id}: {e}")
-            if is_connectivity_error(e):
-                raise
-            return None
+            raise
 
     async def find_user_id_by_credential_phone(self, phone_number: str) -> Optional[str]:
         """Find a user whose stored credential data contains this phone number."""
@@ -544,9 +530,7 @@ class SupabaseService:
             return None
         except Exception as e:
             logger.error(f"Failed to find user by phone credential: {e}")
-            if is_connectivity_error(e):
-                raise
-            return None
+            raise
 
     async def find_credential_by_phone(self, phone_number: str, cred_type: str) -> Optional[Dict[str, Any]]:
         """Find one credential row by provider phone number."""
@@ -565,9 +549,7 @@ class SupabaseService:
             return response.data[0] if response.data else None
         except Exception as e:
             logger.error(f"Failed to find {cred_type} credential by phone: {e}")
-            if is_connectivity_error(e):
-                raise
-            return None
+            raise
 
     async def delete_credentials(self, user_id: str, cred_type: str) -> bool:
         """Delete user credentials."""
@@ -584,9 +566,7 @@ class SupabaseService:
             return bool(response.data)
         except Exception as e:
             logger.error(f"Failed to delete {cred_type} credentials for user {user_id}: {e}")
-            if is_connectivity_error(e):
-                raise
-            return False
+            raise
 
     # ============ Notifications Operations ============
     async def create_notification(self, user_id: str, title: str, message: str, notification_type: str = "info") -> Dict[str, Any]:
@@ -618,9 +598,7 @@ class SupabaseService:
             return response.data
         except Exception as e:
             logger.error(f"Failed to get notifications for user {user_id}: {e}")
-            if is_connectivity_error(e):
-                raise
-            return []
+            raise
 
     # ============ Plan and Usage Operations ============
     async def get_user_plan(self, user_id: str) -> Optional[Dict[str, Any]]:

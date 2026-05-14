@@ -65,11 +65,12 @@ class CallTaskScheduler:
         for task in due_tasks:
             task_type = str(task.get("type") or "general")
             metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
-            # Browser-only tasks still need the user's browser, so the frontend
-            # runner owns opening YouTube/website tabs. Backend handles actions
-            # that can complete without the user's PC: calls, Gmail, and general
-            # reminders/status updates.
-            if task_type in {"youtube", "website"} and not call_reminder_service.task_wants_call(task):
+            wants_call = call_reminder_service.task_wants_call(task)
+            # The backend should only run actions that can complete while the
+            # user's browser is closed. Plain reminders and browser-opening
+            # tasks are intentionally left for the frontend runner so it can
+            # mark them missed_offline when the PC/app was unavailable.
+            if task_type != "gmail" and not wants_call:
                 continue
             if task_type in {"youtube", "website"} and metadata.get("call_status") == "placed":
                 continue
