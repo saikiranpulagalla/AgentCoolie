@@ -105,9 +105,16 @@ export default function Personalization() {
         console.error('Save failed', payload);
         return toast({ title: 'Save failed', description: payload?.message || 'Could not save preferences.' });
       }
+      const savedSettings: PersonalizationSettings = {
+        tone: payload?.tone ?? settings.tone,
+        responseLength: payload?.response_length ?? settings.responseLength,
+        formality: payload?.formality ?? settings.formality,
+        includeEmojis: typeof payload?.include_emojis === 'boolean' ? payload.include_emojis : settings.includeEmojis,
+      };
+      setSettings(savedSettings);
       try {
-        localStorage.setItem(`agentcoolie:preferences:${userId}`, JSON.stringify(settings));
-        window.dispatchEvent(new CustomEvent('agentcoolie:preferences-updated', { detail: settings }));
+        localStorage.setItem(`agentcoolie:preferences:${userId}`, JSON.stringify(savedSettings));
+        window.dispatchEvent(new CustomEvent('agentcoolie:preferences-updated', { detail: savedSettings }));
       } catch {}
       toast({ title: 'Settings saved', description: 'Your personalization preferences have been updated.' });
     } catch (err) {

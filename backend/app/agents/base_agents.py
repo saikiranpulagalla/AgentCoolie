@@ -257,7 +257,7 @@ Respond as AgentCoolie, keeping the guidelines above in mind. You have web searc
                 return "Sorry, the response took too long. Please try again."
             else:
                 logger.error(f"Chat agent failed: {e}")
-                return f"Sorry, I encountered an error: {str(e)[:100]}"
+                return "Sorry, I encountered an internal AI error. Please try again."
 
     async def analyze_sentiment(self, text: str) -> Dict[str, Any]:
         """

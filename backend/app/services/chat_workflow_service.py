@@ -468,15 +468,7 @@ class ChatWorkflowService:
             created_task, task_error = await self._maybe_create_task(user_id, original_message or effective_message)
 
         web_results: list[dict[str, Any]] = []
-        web_search_attempted = web_search_service.should_search(original_message or effective_message)
-        if web_search_attempted:
-            await plan_service.check_and_consume(
-                user_id,
-                "web_searches",
-                metadata={"source": "chat", "conversation_id": conversation_id},
-            )
-            web_results = await web_search_service.search(original_message or effective_message, limit=5)
-
+        web_search_attempted = False
         document_state = await redis_memory_service.get_state(user_id, "document", conversation_id=conversation_id)
         if document_state and isinstance(document_state, dict):
             document_text = str(document_state.get("text") or "").strip()
@@ -542,6 +534,14 @@ class ChatWorkflowService:
                             or "The Gmail workflow is not ready yet."
                         )
         else:
+            web_search_attempted = web_search_service.should_search(original_message or effective_message)
+            if web_search_attempted:
+                await plan_service.check_and_consume(
+                    user_id,
+                    "web_searches",
+                    metadata={"source": "chat", "conversation_id": conversation_id},
+                )
+                web_results = await web_search_service.search(original_message or effective_message, limit=5)
             response = await chat_agent.chat(
                 effective_message,
                 context=context,

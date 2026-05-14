@@ -517,7 +517,7 @@ async def webhook_proxy(
         logger.error(f"Webhook proxy error: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to process webhook: {str(e)}"
+            detail="Failed to process this message. Please try again."
         )
 
 
@@ -569,5 +569,5 @@ async def webhook_proxy_json(
         logger.error(f"Webhook JSON proxy error: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to process webhook: {str(e)}"
+            detail="Failed to process this message. Please try again."
         )

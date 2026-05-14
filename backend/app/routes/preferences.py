@@ -54,6 +54,14 @@ def _normalize_formality(value: Any) -> str:
     return formality if formality in ALLOWED_FORMALITY else DEFAULT_PREFERENCES["formality"]
 
 
+def _normalize_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+    return bool(value)
+
+
 def _normalize_preferences(payload: dict[str, Any]) -> dict[str, Any]:
     tone = str(payload.get("tone") or DEFAULT_PREFERENCES["tone"]).strip().lower()
     response_length = str(
@@ -66,7 +74,7 @@ def _normalize_preferences(payload: dict[str, Any]) -> dict[str, Any]:
         "tone": tone if tone in ALLOWED_TONES else DEFAULT_PREFERENCES["tone"],
         "response_length": response_length if response_length in ALLOWED_LENGTHS else DEFAULT_PREFERENCES["response_length"],
         "formality": _normalize_formality(payload.get("formality")),
-        "include_emojis": bool(payload.get("include_emojis", payload.get("includeEmojis", False))),
+        "include_emojis": _normalize_bool(payload.get("include_emojis", payload.get("includeEmojis", False))),
     }
 
 

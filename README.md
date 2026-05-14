@@ -123,8 +123,8 @@ sequenceDiagram
 
 AgentCoolie currently does not use Celery. Background work is handled by two lightweight runners:
 
-- Backend runner: `backend/app/services/call_task_scheduler.py` starts from FastAPI startup as an in-process `asyncio` polling loop. It polls Supabase for due `pending` tasks, atomically claims them by changing status to `calling`, then runs server-side work such as Gmail, general reminders, and Twilio calls.
-- Frontend runner: `client/src/components/ScheduledTaskRunner.tsx` runs while the user has the app open. It handles browser-only work such as opening YouTube videos or websites, because the backend cannot open tabs on the user's device.
+- Backend runner: `backend/app/services/call_task_scheduler.py` starts from FastAPI startup as an in-process `asyncio` polling loop. It polls Supabase for due `pending` tasks, atomically claims server-executable work by changing status to `calling`, then runs Gmail tasks and Twilio call reminders.
+- Frontend runner: `client/src/components/ScheduledTaskRunner.tsx` runs while the user has the app open. It handles plain reminders and browser-only work such as opening YouTube videos or websites, because the backend cannot open tabs or local notifications on the user's device.
 
 ```mermaid
 flowchart TD
@@ -134,12 +134,11 @@ flowchart TD
   C --> E["Frontend visible-tab runner"]
   D --> F{"Server executable"}
   F -->|Gmail| G["Call n8n Gmail workflow"]
-  F -->|General reminder| H["Mark reminder delivered"]
   F -->|Call requested| I["Place Twilio voice call"]
-  F -->|YouTube or website only| J["Leave pending for browser runner"]
-  E --> K["Open browser tab or mark missed_offline"]
+  F -->|Plain reminder or browser-only task| J["Leave pending for browser runner"]
+  J --> E
+  E --> K["Notify, open browser tab, or mark missed_offline"]
   G --> L["Update task status and execution message"]
-  H --> L
   I --> L
   K --> L
 ```

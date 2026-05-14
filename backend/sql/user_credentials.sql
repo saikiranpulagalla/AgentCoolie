@@ -19,7 +19,26 @@ alter table public.user_credentials
   add column if not exists created_at timestamptz not null default now(),
   add column if not exists updated_at timestamptz not null default now();
 
+with ranked as (
+  select
+    id,
+    row_number() over (
+      partition by user_id, type
+      order by updated_at desc nulls last, created_at desc nulls last, id desc
+    ) as rn
+  from public.user_credentials
+  where user_id is not null
+    and type is not null
+)
+delete from public.user_credentials c
+using ranked r
+where c.id = r.id
+  and r.rn > 1;
+
 create index if not exists user_credentials_user_type_idx
+  on public.user_credentials (user_id, type);
+
+create unique index if not exists user_credentials_user_type_unique_idx
   on public.user_credentials (user_id, type);
 
 create or replace function public.set_updated_at()

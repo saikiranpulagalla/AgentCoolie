@@ -23,6 +23,8 @@ async def execute_gmail_task(user_id: str, task: dict[str, Any]) -> dict[str, An
     tool_status = await n8n_service.gmail_status(user_id)
     if not tool_status.get("configured"):
         raise RuntimeError("Gmail automation is not configured on the backend.")
+    if tool_status.get("storage_error"):
+        raise RuntimeError(tool_status.get("message") or "Could not verify Gmail connection because Supabase is unreachable.")
     if not tool_status.get("connected"):
         raise RuntimeError("Gmail is not connected. Connect Gmail in Settings first.")
 

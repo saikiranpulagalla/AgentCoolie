@@ -67,7 +67,7 @@ export function ScheduledTaskRunner() {
 
         const currentTime = Date.now();
         const dueTasks = rows.filter((row) => {
-          if (row.status === "sent" || row.status === "missed_offline" || row.status === "calling" || !row.datetime) return false;
+          if (row.status === "sent" || row.status === "missed_offline" || row.status === "calling" || row.status === "failed" || !row.datetime) return false;
           const dueAt = Date.parse(row.datetime);
           return !Number.isNaN(dueAt) && dueAt <= currentTime;
         });
@@ -143,8 +143,9 @@ export function ScheduledTaskRunner() {
               openUrl(url);
             }
           } catch (e) {
-            processingIds.current.delete(task.id);
             console.error("Failed to run scheduled task:", e);
+          } finally {
+            processingIds.current.delete(task.id);
           }
         }
       } catch (e) {

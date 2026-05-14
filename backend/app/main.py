@@ -3,6 +3,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from app.core.body_limit import BodySizeLimitMiddleware
 from app.core.config import settings
 from app.services.call_task_scheduler import call_task_scheduler
 from app.services.firebase_service import firebase_service
@@ -38,6 +39,11 @@ app = FastAPI(
     description="Memory-aware AI workspace with multi-channel integration",
     version="2.0.0",
 )
+
+# Reject oversized request bodies before JSON/multipart parsers buffer them.
+max_upload_count = max(1, int(settings.MAX_ATTACHMENT_COUNT or 1))
+max_request_body_bytes = (int(settings.MAX_UPLOAD_BYTES or 0) * max_upload_count) + (1024 * 1024)
+app.add_middleware(BodySizeLimitMiddleware, max_body_size=max_request_body_bytes)
 
 # Add CORS middleware
 app.add_middleware(

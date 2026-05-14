@@ -170,7 +170,7 @@ class LongTermMemoryService:
         if not settings.LONG_TERM_MEMORY_ENABLED or not gemini_service:
             return
 
-        saved_heuristic = False
+        saved_heuristic: list[str] = []
         for item in self._heuristic_memories(user_message):
             try:
                 await self._save_memory(
@@ -182,19 +182,24 @@ class LongTermMemoryService:
                     user_message=user_message,
                     assistant_response=assistant_response,
                 )
-                saved_heuristic = True
+                saved_heuristic.append(str(item["content"]))
             except Exception as e:
                 if is_connectivity_error(e):
                     logger.warning("Long-term memory save skipped because Supabase is unreachable")
                 else:
                     logger.warning(f"Heuristic long-term memory save failed: {e}")
 
-        if saved_heuristic:
-            return
-
+        already_saved_note = (
+            "Already saved by deterministic extraction:\n"
+            + "\n".join(f"- {item}" for item in saved_heuristic)
+            + "\nDo not save the same fact again. Only save an additional distinct durable fact if present.\n\n"
+            if saved_heuristic
+            else ""
+        )
         prompt = f"""Decide whether this user turn contains stable, important information worth remembering long-term.
 Save only durable preferences, identity details, goals, recurring plans, constraints, important relationships, or user-specific facts.
 Do not save temporary requests, greetings, one-off commands, secrets, passwords, API keys, or sensitive credentials.
+{already_saved_note}
 
 Respond with strict JSON only:
 {{"save": true/false, "importance_score": 0.0-1.0, "memory": "one concise first-person-neutral fact to remember", "reason": "short reason"}}

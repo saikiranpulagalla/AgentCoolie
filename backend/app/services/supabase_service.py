@@ -144,10 +144,11 @@ class SupabaseService:
                 response = await asyncio.to_thread(_create)
             except Exception as e:
                 if conversation_id and "conversation_id" in str(e):
-                    payload.pop("conversation_id", None)
-                    response = await asyncio.to_thread(_create)
-                else:
-                    raise
+                    raise RuntimeError(
+                        "Supabase chat_messages.conversation_id is missing. "
+                        "Run backend/sql/chat_messages_conversation_id.sql before using chat-scoped history."
+                    ) from e
+                raise
             return response.data[0]
         except Exception as e:
             logger.error(f"Failed to create message: {e}")
@@ -177,6 +178,28 @@ class SupabaseService:
             return rows
         except Exception as e:
             logger.error(f"Failed to get messages for user {user_id}: {e}")
+            raise
+
+    async def delete_messages_for_conversation(self, user_id: str, conversation_id: str) -> int:
+        """Delete durable chat messages for one user-owned conversation."""
+        conversation_id = str(conversation_id or "").strip()
+        if not conversation_id:
+            return 0
+
+        try:
+            def _delete():
+                return (
+                    self.client.table("chat_messages")
+                    .delete()
+                    .eq("user_id", user_id)
+                    .eq("conversation_id", conversation_id)
+                    .execute()
+                )
+
+            response = await asyncio.to_thread(_delete)
+            return len(response.data or [])
+        except Exception as e:
+            logger.error(f"Failed to delete chat messages for user {user_id}, conversation {conversation_id}: {e}")
             raise
 
     # ============ Long-Term Memory Operations ============

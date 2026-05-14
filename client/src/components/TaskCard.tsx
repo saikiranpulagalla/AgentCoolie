@@ -164,7 +164,7 @@ export function TaskCard({ task, onToggle, onDelete }: TaskCardProps) {
             {status === "calling" && (
               <Badge variant="outline" className="text-xs gap-1.5 px-3 py-1 bg-sky-500/10 text-sky-700 border-sky-500/30">
                 <PhoneCall className="h-3.5 w-3.5" />
-                Calling
+                {task.notifyByCall ? "Calling" : "Running"}
               </Badge>
             )}
 

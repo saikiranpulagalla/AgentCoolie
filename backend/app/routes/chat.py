@@ -91,12 +91,15 @@ async def delete_conversation_memory(
     conversation_id: str,
     user_id: str = Depends(get_current_user),
 ) -> dict:
-    """Delete Redis short memory and pending tool state for one chat."""
+    """Delete Redis short memory, pending tool state, and durable rows for one chat."""
     try:
         await redis_memory_service.delete_conversation(user_id, conversation_id)
-        return {"status": "success"}
+        deleted_messages = await supabase_service.delete_messages_for_conversation(user_id, conversation_id)
+        return {"status": "success", "deleted_messages": deleted_messages}
     except Exception as e:
         logger.error(f"Failed to delete chat memory {conversation_id} for {user_id}: {e}")
+        if is_connectivity_error(e):
+            raise HTTPException(status_code=503, detail=SUPABASE_UNREACHABLE_DETAIL)
         raise HTTPException(status_code=500, detail="Failed to delete chat memory")
 
 
@@ -183,4 +186,4 @@ async def analyze_sentiment(
         return analysis
     except Exception as e:
         logger.error(f"Sentiment analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Sentiment analysis failed")

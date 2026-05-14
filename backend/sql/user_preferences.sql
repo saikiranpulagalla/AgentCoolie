@@ -26,7 +26,25 @@ alter table public.user_preferences
   add column if not exists metadata jsonb not null default '{}'::jsonb,
   add column if not exists updated_at timestamptz not null default now();
 
+with ranked as (
+  select
+    id,
+    row_number() over (
+      partition by user_id
+      order by updated_at desc nulls last, created_at desc nulls last, id desc
+    ) as rn
+  from public.user_preferences
+  where user_id is not null
+)
+delete from public.user_preferences p
+using ranked r
+where p.id = r.id
+  and r.rn > 1;
+
 create index if not exists user_preferences_user_id_idx
+  on public.user_preferences (user_id);
+
+create unique index if not exists user_preferences_user_id_unique_idx
   on public.user_preferences (user_id);
 
 create or replace function public.set_updated_at()

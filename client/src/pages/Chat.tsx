@@ -56,11 +56,17 @@ export default function Chat() {
 
   const deleteConversationMemory = async (conversationId: string) => {
     try {
-      await apiFetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/memory`, {
+      const response = await apiFetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/memory`, {
         method: 'DELETE',
       });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body?.detail || "Failed to delete remote chat memory.");
+      }
+      return true;
     } catch (e) {
       console.warn('Failed to delete remote chat memory:', e);
+      return false;
     }
   };
 
@@ -79,15 +85,23 @@ export default function Chat() {
     }
   };
 
-  const handleDeleteConversation = (conversationId: string) => {
-    void deleteConversationMemory(conversationId);
+  const handleDeleteConversation = async (conversationId: string) => {
+    const deletedRemote = await deleteConversationMemory(conversationId);
+    if (!deletedRemote) {
+      setError("Could not delete this chat from the server. Please try again.");
+      return;
+    }
     delete lastYoutubeByConversationRef.current[conversationId];
     deleteConversation(conversationId);
   };
 
-  const handleClearMessages = () => {
+  const handleClearMessages = async () => {
     if (currentConversationId) {
-      void deleteConversationMemory(currentConversationId);
+      const deletedRemote = await deleteConversationMemory(currentConversationId);
+      if (!deletedRemote) {
+        setError("Could not clear this chat on the server. Please try again.");
+        return;
+      }
       delete lastYoutubeByConversationRef.current[currentConversationId];
     }
     clearMessages();

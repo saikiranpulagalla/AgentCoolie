@@ -1,7 +1,7 @@
-# CoolieAssistant Setup Verification Script
+# AgentCoolie Setup Verification Script
 # Checks if everything is configured correctly
 
-Write-Host "Verifying CoolieAssistant Setup..." -ForegroundColor Green
+Write-Host "Verifying AgentCoolie Setup..." -ForegroundColor Green
 Write-Host ""
 
 $errors = @()

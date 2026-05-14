@@ -31,6 +31,44 @@ const debugLog = (...args: unknown[]) => {
   }
 };
 
+const toTaskType = (value: unknown): Task["type"] => {
+  const raw = String(value || "reminder").toLowerCase();
+  if (raw === "general" || raw === "task") return "reminder";
+  if (raw === "gmail" || raw === "whatsapp" || raw === "youtube" || raw === "website" || raw === "reminder") {
+    return raw;
+  }
+  return "reminder";
+};
+
+const toPriority = (value: unknown): Task["priority"] => {
+  const raw = String(value || "medium").toLowerCase();
+  return raw === "low" || raw === "medium" || raw === "high" ? raw : "medium";
+};
+
+const toTaskStatus = (value: unknown): Task["status"] => {
+  const raw = String(value || "pending").toLowerCase();
+  return raw === "pending" || raw === "calling" || raw === "sent" || raw === "missed_offline" || raw === "failed"
+    ? raw
+    : "pending";
+};
+
+const reminderRowToTask = (row: any, fallbackCreatedAt: Date = new Date()): Task => ({
+  id: row.id,
+  title: String(row.message || "").slice(0, 40) || "Reminder",
+  description: row.message,
+  type: toTaskType(row.type),
+  priority: toPriority(row.priority),
+  completed: row.status === "sent",
+  status: toTaskStatus(row.status),
+  executionMessage: row.execution_message,
+  lastAttemptAt: row.last_attempt_at ? new Date(row.last_attempt_at) : undefined,
+  notifyByCall: Boolean(row.notify_by_call),
+  callStatus: row.call_status,
+  callErrorCode: row.call_error_code,
+  dueDate: row.datetime ? new Date(row.datetime) : undefined,
+  createdAt: row.created_at ? new Date(row.created_at) : fallbackCreatedAt,
+});
+
 export default function Tasks() {
   const [filter, setFilter] = useState<"all" | "gmail" | "reminder" | "youtube" | "website">("all");
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -72,22 +110,10 @@ export default function Tasks() {
             debugLog('Parsed cached reminder count:', Array.isArray(parsed) ? parsed.length : 0);
             if (Array.isArray(parsed) && parsed.length > 0) {
               debugLog('Loading cached reminders:', parsed.length);
-              const cachedTasks = parsed.map((d, i) => ({
-                id: d.id || `${d.created_at || d.createdAt || Date.now()}-${i}`,
-                title: (d.message || '').slice(0,40) || 'Reminder',
-                description: d.message,
-                type: d.type === 'general' ? 'reminder' : d.type,
-                priority: 'low',
-                completed: d.status === 'sent',
-                status: d.status || (d.status === 'sent' ? 'sent' : 'pending'),
-                executionMessage: d.execution_message,
-                lastAttemptAt: d.last_attempt_at ? new Date(d.last_attempt_at) : undefined,
-                notifyByCall: Boolean(d.notify_by_call),
-                callStatus: d.call_status,
-                callErrorCode: d.call_error_code,
-                dueDate: d.datetime ? new Date(d.datetime) : undefined,
-                createdAt: new Date(d.created_at || d.createdAt || Date.now()),
-              } as Task));
+              const cachedTasks = parsed.map((d, i) => reminderRowToTask(
+                { ...d, id: d.id || `${d.created_at || d.createdAt || Date.now()}-${i}` },
+                new Date(d.created_at || d.createdAt || Date.now()),
+              ));
               debugLog('Mapped cached task count:', cachedTasks.length);
               setTasks(cachedTasks);
             } else {
@@ -142,24 +168,10 @@ export default function Tasks() {
 
         debugLog('Received reminders from server:', rows.length);
 
-            const mapped = rows.map((d: any, i: number) => ({
-          id: d.id || `${d.created_at || d.createdAt || Date.now()}-${i}`,
-          title: (d.message || '').slice(0, 40) || 'Reminder',
-          description: d.message,
-              // normalize youtube type if present
-              type: d.type === 'general' ? 'reminder' : (d.type === 'youtube' ? 'youtube' : d.type),
-          priority: 'low',
-          // only consider status === 'sent' as completed; failed should remain visible
-          completed: d.status === 'sent',
-          status: d.status || (d.status === 'sent' ? 'sent' : 'pending'),
-          executionMessage: d.execution_message,
-          lastAttemptAt: d.last_attempt_at ? new Date(d.last_attempt_at) : undefined,
-          notifyByCall: Boolean(d.notify_by_call),
-          callStatus: d.call_status,
-          callErrorCode: d.call_error_code,
-          dueDate: d.datetime ? new Date(d.datetime) : undefined,
-          createdAt: new Date(d.created_at || d.createdAt || Date.now()),
-        } as Task));
+        const mapped = rows.map((d: any, i: number) => reminderRowToTask(
+          { ...d, id: d.id || `${d.created_at || d.createdAt || Date.now()}-${i}` },
+          new Date(d.created_at || d.createdAt || Date.now()),
+        ));
 
         // dedupe by id (in case of duplicates) and preserve ordering
         const map = new Map<string, Task>();
@@ -224,22 +236,7 @@ export default function Tasks() {
                 return prev;
               }
               
-              const t: Task = {
-                id: d.id,
-                title: d.message.slice(0, 40),
-                description: d.message,
-                type: "reminder",
-                priority: "low",
-                completed: false,
-                status: d.status || "pending",
-                executionMessage: d.execution_message,
-                lastAttemptAt: d.last_attempt_at ? new Date(d.last_attempt_at) : undefined,
-                notifyByCall: Boolean(d.notify_by_call),
-                callStatus: d.call_status,
-                callErrorCode: d.call_error_code,
-                dueDate: d.datetime ? new Date(d.datetime) : undefined,
-                createdAt: new Date(),
-              };
+              const t = reminderRowToTask(d);
               
               const map = new Map<string, Task>();
               map.set(t.id, t);
@@ -425,29 +422,17 @@ export default function Tasks() {
       }
     };
 
-    const handleToggle = (id: string) => {
-    setTasks((prev) =>
-      prev.map((task) =>
-        task.id === id
-          ? {
-              ...task,
-              completed: !task.completed,
-              status: task.completed ? 'pending' : 'sent',
-              executionMessage: task.completed ? undefined : 'Task manually marked complete.',
-              lastAttemptAt: new Date(),
-            }
-          : task
-      )
-    );
-    // persist
+  const handleToggle = (id: string) => {
     const task = tasks.find((t) => t.id === id);
     if (task) {
       const newStatus = task.completed ? 'pending' : 'sent';
       (async () => {
         try {
           const token = await getIdToken();
-          if (!token) return;
-          const newStatus = task.completed ? 'pending' : 'sent';
+          if (!token) {
+            toast({ title: 'Not signed in', description: 'Please sign in to update tasks.', variant: 'destructive' });
+            return;
+          }
           const resp = await apiFetch(`/api/reminders/${id}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -457,18 +442,29 @@ export default function Tasks() {
               last_attempt_at: new Date().toISOString(),
             }),
           });
-          if (resp.ok) {
-            toast({ title: 'Task updated', description: `Task ${task.title} marked ${newStatus === 'sent' ? 'complete' : 'pending'}` });
-            if (newStatus === 'sent') {
-              addNotification({ id: task.id, title: task.title, description: task.description, type: task.type, completedAt: new Date() });
-              // If this is a YouTube task, open the video when marked sent/completed
-              if (task.type === 'youtube') {
-                openYoutubeFromTask(task);
-              }
+          const payload = await resp.json().catch(() => ({}));
+          if (!resp.ok) {
+            toast({
+              title: 'Task update failed',
+              description: payload?.detail || payload?.message || 'Could not update this task.',
+              variant: 'destructive',
+            });
+            return;
+          }
+
+          const updatedTask = reminderRowToTask(payload, task.createdAt);
+          setTasks((prev) => prev.map((item) => (item.id === id ? updatedTask : item)));
+          toast({ title: 'Task updated', description: `Task ${task.title} marked ${newStatus === 'sent' ? 'complete' : 'pending'}` });
+          if (newStatus === 'sent') {
+            addNotification({ id: task.id, title: task.title, description: task.description, type: task.type, completedAt: new Date() });
+            // If this is a YouTube task, open the video when marked sent/completed
+            if (task.type === 'youtube') {
+              openYoutubeFromTask(task);
             }
           }
         } catch (err) {
           console.error(err);
+          toast({ title: 'Task update failed', description: 'Could not reach the server.', variant: 'destructive' });
         }
       })();
     }
@@ -478,12 +474,25 @@ export default function Tasks() {
     (async () => {
       try {
         const token = await getIdToken();
-        if (!token) return;
-        await apiFetch(`/api/reminders/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+        if (!token) {
+          toast({ title: 'Not signed in', description: 'Please sign in to delete tasks.', variant: 'destructive' });
+          return;
+        }
+        const resp = await apiFetch(`/api/reminders/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+        if (!resp.ok) {
+          const payload = await resp.json().catch(() => ({}));
+          toast({
+            title: 'Delete failed',
+            description: payload?.detail || payload?.message || 'Could not delete this task.',
+            variant: 'destructive',
+          });
+          return;
+        }
+        setTasks((prev) => prev.filter((task) => task.id !== id));
+        toast({ title: 'Task deleted', description: 'The task was removed from your Tasks page.' });
       } catch (err) {
         console.error(err);
-      } finally {
-        setTasks((prev) => prev.filter((task) => task.id !== id));
+        toast({ title: 'Delete failed', description: 'Could not reach the server.', variant: 'destructive' });
       }
     })();
   };
@@ -557,22 +566,7 @@ export default function Tasks() {
         data = { detail: rawText || res.statusText };
       }
       if (res.ok) {
-        const t: Task = {
-          id: data.id,
-          title: data.message.slice(0, 40),
-          description: data.message,
-          type: data.type === 'general' ? 'reminder' : data.type,
-          priority: 'low',
-          completed: false,
-          status: data.status || 'pending',
-          executionMessage: data.execution_message,
-          lastAttemptAt: data.last_attempt_at ? new Date(data.last_attempt_at) : undefined,
-          notifyByCall: Boolean(data.notify_by_call),
-          callStatus: data.call_status,
-          callErrorCode: data.call_error_code,
-          dueDate: data.datetime ? new Date(data.datetime) : undefined,
-          createdAt: new Date(data.created_at || Date.now()),
-        };
+        const t = reminderRowToTask(data, new Date(data.created_at || Date.now()));
         setTasks((prev) => {
           const map = new Map<string, Task>();
           map.set(t.id, t);
@@ -591,7 +585,7 @@ export default function Tasks() {
       }
     } catch (err) {
       console.error(err);
-      alert('Failed to create reminder');
+      toast({ title: 'Failed to create reminder', description: 'Could not reach the server.', variant: 'destructive' });
     } finally {
       setSubmitting(false);
     }

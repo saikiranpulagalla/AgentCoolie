@@ -84,6 +84,9 @@ class CallTaskScheduler:
 
         metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
         now_iso = datetime.now(timezone.utc).isoformat()
+        task_type = str(task.get("type") or "general")
+        wants_call = call_reminder_service.task_wants_call(task)
+        claim_message = "Call reminder is being placed." if wants_call else "Task is being executed by AgentCoolie."
 
         try:
             claimed = await supabase_service.claim_pending_task(
@@ -91,13 +94,12 @@ class CallTaskScheduler:
                 user_id=user_id,
                 status="calling",
                 completed=False,
-                execution_message="Call reminder is being placed.",
+                execution_message=claim_message,
                 last_attempt_at=now_iso,
             )
             if not claimed:
                 return
 
-            task_type = str(task.get("type") or "general")
             await plan_service.check_and_consume(
                 user_id,
                 "task_executions",

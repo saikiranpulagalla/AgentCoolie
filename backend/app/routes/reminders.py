@@ -74,6 +74,7 @@ def _task_to_reminder(row: dict) -> dict:
         "type": "general" if task_type == "reminder" else task_type,
         "message": row.get("description") or row.get("title") or "",
         "datetime": row.get("due_date"),
+        "priority": row.get("priority") or "medium",
         "status": status,
         "execution_message": row.get("execution_message"),
         "last_attempt_at": row.get("last_attempt_at"),
@@ -217,7 +218,6 @@ async def create_reminder(
     except HTTPException:
         raise
     except Exception as e:
-        error_text = str(e)
         logger.error(f"Failed to create reminder task: {e}")
         if is_connectivity_error(e):
             raise HTTPException(status_code=503, detail=SUPABASE_UNREACHABLE_DETAIL)

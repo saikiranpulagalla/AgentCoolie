@@ -10,7 +10,8 @@ import { getFirebaseStorage, getFirebaseAuth } from "@/lib/firebase";
 import { apiFetch, apiUrl, getApiBase } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
-import { Camera, User, Bell, Globe, Shield, PhoneCall, MessageCircle, CreditCard, Zap } from "lucide-react";
+import { Link } from "wouter";
+import { Camera, User, Bell, Globe, Shield, PhoneCall, MessageCircle, CreditCard, Zap, LockKeyhole } from "lucide-react";
 import type { UserPreferences } from "@shared/schema";
 // Textarea not needed for masked secrets; using Input (password) instead
 
@@ -40,6 +41,42 @@ export default function Settings() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [planSummary, setPlanSummary] = useState<any>(null);
   const [displayName, setDisplayName] = useState(user?.displayName || "");
+
+  const planLoaded = Boolean(planSummary?.plan?.id);
+  const quotaMax = (feature: string) => {
+    const limits = planSummary?.plan?.quotas?.[feature];
+    if (!limits || typeof limits !== "object") return 0;
+    const values = Object.values(limits)
+      .map((value) => Number(value || 0))
+      .filter((value) => Number.isFinite(value));
+    return values.length ? Math.max(...values) : 0;
+  };
+  const gmailUnlocked = planLoaded && Math.max(
+    quotaMax("gmail_sends"),
+    quotaMax("gmail_reads"),
+    quotaMax("gmail_drafts"),
+  ) > 0;
+  const whatsappUnlocked = planLoaded && quotaMax("whatsapp_messages") > 0;
+  const lockedToolDescription = planLoaded
+    ? "This connector is available in AgentCoolie Autopilot. Upgrade before connecting or changing it."
+    : "Checking your plan before enabling paid connectors.";
+
+  const requirePaidTool = (unlocked: boolean, label: string) => {
+    if (unlocked) return true;
+    toast({
+      title: `${label} requires Autopilot`,
+      description: planLoaded
+        ? `${label} is not included in AgentCoolie Companion. Upgrade to Autopilot to use this connector.`
+        : "Wait for your plan to finish loading, then try again.",
+      variant: "destructive",
+    });
+    return false;
+  };
+
+  useEffect(() => {
+    if (!previewUrl?.startsWith("blob:")) return;
+    return () => URL.revokeObjectURL(previewUrl);
+  }, [previewUrl]);
 
   const clearGmailCredentialFlags = (uid?: string | null) => {
     try {
@@ -175,6 +212,7 @@ export default function Settings() {
 
   const handleSaveGmailCredentials = async (e?: any) => {
     e?.preventDefault?.();
+    if (!requirePaidTool(gmailUnlocked, "Gmail")) return;
     setSavingCreds(true);
     try {
       const uid = user?.uid;
@@ -271,13 +309,15 @@ export default function Settings() {
   }, [authLoading, user?.uid]);
 
   const handleSaveWhatsappPhone = async (phoneOverride?: string) => {
+    const nextPhone = (phoneOverride ?? whatsappPhone).trim();
+    if (nextPhone && !requirePaidTool(whatsappUnlocked, "WhatsApp")) return;
     setSavingWhatsappPhone(true);
     try {
       const headers = await getAuthHeaders();
       const resp = await apiFetch('/api/integrations/whatsapp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
-        body: JSON.stringify({ phone_number: (phoneOverride ?? whatsappPhone).trim() }),
+        body: JSON.stringify({ phone_number: nextPhone }),
       });
       const body = await resp.json().catch(() => ({}));
       if (!resp.ok) {
@@ -624,15 +664,39 @@ export default function Settings() {
               <h2 className="text-2xl font-bold">Gmail Integration</h2>
             </div>
 
+            {!gmailUnlocked && (
+              <div className="rounded-2xl border border-primary/20 bg-primary/5 p-4 text-sm">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-start gap-3">
+                    <LockKeyhole className="mt-0.5 h-4 w-4 text-primary" />
+                    <div>
+                      <div className="font-semibold">Gmail is locked in Companion mode</div>
+                      <p className="mt-1 text-muted-foreground">{lockedToolDescription}</p>
+                    </div>
+                  </div>
+                  <Button asChild size="sm">
+                    <Link href="/checkout">Upgrade</Link>
+                  </Button>
+                </div>
+              </div>
+            )}
+
             {hasGmailCreds ? (
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="text-lg font-semibold">Gmail Connected</div>
-                    <div className="text-sm text-muted-foreground">Your Gmail account is connected. Only one Gmail account can be connected at a time. When connected, the app can send and read messages on your behalf for reminders and automation.</div>
+                    <div className="text-sm text-muted-foreground">
+                      Your Gmail account is connected. Only one Gmail account can be connected at a time.
+                      {gmailUnlocked
+                        ? " When connected, the app can send and read messages on your behalf for reminders and automation."
+                        : " Upgrade to Autopilot before using Gmail automation again, or disconnect this account."}
+                    </div>
                   </div>
                   <div className="flex flex-col items-end gap-2">
-                    <div className="text-sm text-green-600 font-medium">Connected</div>
+                    <div className={`text-sm font-medium ${gmailUnlocked ? 'text-green-600' : 'text-amber-600'}`}>
+                      {gmailUnlocked ? 'Connected' : 'Connected, locked'}
+                    </div>
                     <Button variant="ghost" onClick={async () => {
                       try {
                         const headers = await getAuthHeaders();
@@ -659,7 +723,8 @@ export default function Settings() {
                 <div className="flex items-center justify-between pt-2">
                   <div className="text-sm text-muted-foreground">Status: {hasGmailCreds ? <span className="text-green-600">Connected</span> : <span className="text-gray-500">Not connected</span>}</div>
                   <div className="flex gap-2">
-                    <Button variant="outline" onClick={async () => {
+                    <Button variant="outline" disabled={!gmailUnlocked} onClick={async () => {
+                      if (!requirePaidTool(gmailUnlocked, "Gmail")) return;
                       try {
                         const headers = await getAuthHeaders();
                         // If we're running in a dev/debug mode where the server accepts a uid query param,
@@ -814,13 +879,36 @@ export default function Settings() {
               </div>
             </div>
 
+            {!whatsappUnlocked && (
+              <div className="rounded-2xl border border-primary/20 bg-primary/5 p-4 text-sm">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-start gap-3">
+                    <LockKeyhole className="mt-0.5 h-4 w-4 text-primary" />
+                    <div>
+                      <div className="font-semibold">WhatsApp is locked in Companion mode</div>
+                      <p className="mt-1 text-muted-foreground">{lockedToolDescription}</p>
+                    </div>
+                  </div>
+                  <Button asChild size="sm">
+                    <Link href="/checkout">Upgrade</Link>
+                  </Button>
+                </div>
+              </div>
+            )}
+
             <div className="rounded-2xl border bg-background/50 p-5 space-y-4">
               <div>
                 <div className="font-semibold">
-                  Status: {hasWhatsappPhone ? <span className="text-green-600">Connected</span> : whatsappPhone ? <span className="text-amber-600">Verification pending</span> : <span className="text-muted-foreground">Not connected</span>}
+                  Status: {hasWhatsappPhone
+                    ? <span className={whatsappUnlocked ? "text-green-600" : "text-amber-600"}>{whatsappUnlocked ? "Connected" : "Connected, locked"}</span>
+                    : whatsappPhone
+                      ? <span className="text-amber-600">Verification pending</span>
+                      : <span className="text-muted-foreground">Not connected</span>}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Use the same number that joined your Twilio WhatsApp sandbox.
+                  {whatsappUnlocked
+                    ? "Use the same number that joined your Twilio WhatsApp sandbox."
+                    : "Upgrade to Autopilot before connecting or changing WhatsApp access."}
                 </p>
               </div>
 
@@ -831,6 +919,7 @@ export default function Settings() {
                   value={whatsappPhone}
                   onChange={(e) => setWhatsappPhone(e.target.value)}
                   placeholder="+919000000000"
+                  disabled={!whatsappUnlocked}
                 />
                 <p className="text-xs text-muted-foreground">
                   Include country code. Incoming WhatsApp messages from this number will be routed to your account.
@@ -846,7 +935,7 @@ export default function Settings() {
               </div>
 
               <div className="flex flex-wrap gap-2">
-                <Button onClick={() => handleSaveWhatsappPhone()} disabled={savingWhatsappPhone}>
+                <Button onClick={() => handleSaveWhatsappPhone()} disabled={savingWhatsappPhone || !whatsappUnlocked}>
                   {savingWhatsappPhone ? 'Saving...' : 'Save WhatsApp Number'}
                 </Button>
                 <Button
