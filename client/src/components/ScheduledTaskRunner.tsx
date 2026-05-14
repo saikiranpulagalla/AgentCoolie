@@ -15,7 +15,7 @@ type ReminderRow = {
 
 const MISSED_OFFLINE_GRACE_MS = 120000;
 
-function openUrl(url: string) {
+function openUrl(url: string): boolean {
   try {
     const opened = window.open(url, "_blank");
     if (opened) {
@@ -29,11 +29,28 @@ function openUrl(url: string) {
       } catch {
         // focus is best effort
       }
-      return;
+      return true;
     }
   } catch (e) {
     console.warn("Scheduled task window.open failed:", e);
   }
+  return false;
+}
+
+function websiteUrlFromMessage(message: string): string | null {
+  const explicit = message.match(/https?:\/\/[^\s]+/i)?.[0];
+  if (explicit) return explicit;
+
+  const host = message.match(/\b([a-z0-9-]+\.)+[a-z]{2,}\b/i)?.[0];
+  if (host) return `https://${host}`;
+
+  const cleaned = message
+    .replace(/\b(can|could|would)\s+(u|you)\b/gi, " ")
+    .replace(/\b(open|visit|go to|website|site)\b/gi, " ")
+    .replace(/[^\w.-]+/g, " ")
+    .trim()
+    .split(/\s+/)[0];
+  return cleaned ? `https://${cleaned}.com` : null;
 }
 
 export function ScheduledTaskRunner() {
@@ -107,6 +124,48 @@ export function ScheduledTaskRunner() {
               continue;
             }
 
+            if (task.type === "youtube" || task.type === "website") {
+              let openUrlValue: string | null = null;
+              if (task.type === "youtube") {
+                const youtubeResponse = await apiFetch("/api/youtube/open", {
+                  method: "POST",
+                  body: JSON.stringify({ query: task.message }),
+                });
+                const youtubePayload = await youtubeResponse.json().catch(() => ({}));
+                openUrlValue = youtubePayload?.video?.url
+                  || `https://www.youtube.com/results?${new URLSearchParams({ search_query: task.message }).toString()}`;
+              } else {
+                openUrlValue = websiteUrlFromMessage(task.message);
+              }
+
+              const opened = Boolean(openUrlValue && openUrl(openUrlValue));
+              const executionMessage = opened
+                ? `${task.type === "youtube" ? "YouTube" : "Website"} opened in the browser.`
+                : "Your browser blocked the automatic tab. Open this task manually from the Tasks page.";
+
+              await apiFetch(`/api/reminders/${task.id}`, {
+                method: "PATCH",
+                body: JSON.stringify({
+                  status: opened ? "sent" : "failed",
+                  execution_message: executionMessage,
+                  last_attempt_at: new Date().toISOString(),
+                }),
+              });
+
+              toast({
+                title: opened ? (task.type === "youtube" ? "YouTube task opened" : "Website task opened") : "Browser blocked the tab",
+                description: opened ? task.message : executionMessage,
+              });
+              addNotification({
+                id: task.id,
+                title: task.message.slice(0, 40),
+                description: executionMessage,
+                type: task.type || "general",
+                completedAt: new Date(),
+              });
+              continue;
+            }
+
             const executeResponse = await apiFetch(`/api/reminders/${task.id}/execute`, {
               method: "POST",
             });
@@ -140,7 +199,17 @@ export function ScheduledTaskRunner() {
 
             const url = executePayload?.action?.open_url;
             if (!failed && typeof url === "string" && url.trim()) {
-              openUrl(url);
+              const opened = openUrl(url);
+              if (!opened) {
+                await apiFetch(`/api/reminders/${task.id}`, {
+                  method: "PATCH",
+                  body: JSON.stringify({
+                    status: "failed",
+                    execution_message: "Your browser blocked the automatic tab. Open this task manually from the Tasks page.",
+                    last_attempt_at: new Date().toISOString(),
+                  }),
+                });
+              }
             }
           } catch (e) {
             console.error("Failed to run scheduled task:", e);

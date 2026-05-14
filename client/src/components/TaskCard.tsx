@@ -16,6 +16,7 @@ interface TaskCardProps {
   task: Task;
   onToggle?: (id: string) => void;
   onDelete?: (id: string) => void;
+  onOpen?: (id: string) => void;
 }
 
 const typeIcons = {
@@ -46,7 +47,7 @@ const priorityGradients = {
   high: "from-chart-5/10 to-chart-5/5",
 };
 
-export function TaskCard({ task, onToggle, onDelete }: TaskCardProps) {
+export function TaskCard({ task, onToggle, onDelete, onOpen }: TaskCardProps) {
   const Icon = typeIcons[task.type as keyof typeof typeIcons] ?? null;
   const priorityLabel = task.priority.charAt(0).toUpperCase() + task.priority.slice(1);
   const status = task.status || (task.completed ? "sent" : "pending");
@@ -194,6 +195,13 @@ export function TaskCard({ task, onToggle, onDelete }: TaskCardProps) {
             <p className={cn("text-xs", status === "failed" ? "text-destructive" : "text-muted-foreground")}>
               {task.executionMessage}
             </p>
+          )}
+
+          {(task.type === "youtube" || task.type === "website") && !task.completed && (
+            <Button size="sm" variant="outline" onClick={() => onOpen?.(task.id)}>
+              {task.type === "youtube" ? <Play className="h-4 w-4" /> : <Globe className="h-4 w-4" />}
+              Open now
+            </Button>
           )}
         </div>
       </div>

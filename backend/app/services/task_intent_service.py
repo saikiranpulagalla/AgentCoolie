@@ -205,6 +205,52 @@ def _clean_task_text(message: str) -> str:
     return text.strip() or message.strip()
 
 
+def _extract_multi_task_items(message: str) -> list[str]:
+    """Extract explicit "another task" style requests into separate task texts."""
+    if not re.search(r"\banother\s+(?:task|reminder|remainder)\b|\btask\s*\d+\b", message, re.IGNORECASE):
+        return []
+
+    candidate = message.strip()
+    sentence_with_split = [
+        part.strip()
+        for part in re.split(r"[.;]\s+", candidate)
+        if re.search(r"\banother\s+(?:task|reminder|remainder)\b", part, re.IGNORECASE)
+    ]
+    if sentence_with_split:
+        candidate = sentence_with_split[0]
+
+    candidate = re.sub(
+        r"\s+(?:and\s+)?another\s+(?:task|reminder|remainder)\s+(?:to|for)?\s+",
+        " ||| ",
+        candidate,
+        flags=re.IGNORECASE,
+    )
+    candidate = re.sub(
+        r"\s+(?:and\s+)?task\s*\d+\s+(?:to|for)\s+",
+        " ||| ",
+        candidate,
+        flags=re.IGNORECASE,
+    )
+
+    items: list[str] = []
+    seen: set[str] = set()
+    for raw_part in candidate.split("|||"):
+        part = raw_part.strip(" .,-")
+        if not part:
+            continue
+        cleaned = _clean_task_text(part)
+        cleaned = re.sub(r"^(?:and\s+)?task\s*\d+\s*(?:and\s*\d+)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"^(?:to|for)\s+", "", cleaned, flags=re.IGNORECASE).strip(" .,-")
+        normalized = re.sub(r"\s+", " ", cleaned).strip()
+        key = normalized.lower()
+        if not normalized or _is_generic_task_text(normalized) or key in seen:
+            continue
+        seen.add(key)
+        items.append(normalized)
+
+    return items if len(items) > 1 else []
+
+
 def _normalize_type(message: str, value: Any) -> str:
     raw_type = str(value or "").strip().lower()
     if raw_type in {"reminder", "task"}:
@@ -257,6 +303,90 @@ class TaskIntentService:
         return bool(CORE_TRIGGER_PATTERN.search(message)) or (
             bool(TIME_PATTERN.search(message)) and bool(ACTION_PATTERN.search(message))
         )
+
+    async def _create_task_from_parts(
+        self,
+        user_id: str,
+        *,
+        item_text: str,
+        due_date: str | None,
+        source_message: str,
+    ) -> dict[str, Any]:
+        task_type = _normalize_type(item_text, None)
+        priority = "high" if re.search(r"\b(important|critical|urgent)\b", source_message, re.IGNORECASE) else "medium"
+        notify_by_call = _wants_call_reminder(source_message)
+        if notify_by_call:
+            priority = "high"
+
+        metadata = {"notify_by_call": True} if notify_by_call else {}
+        title = item_text.strip()[:80] or "Task"
+        description = item_text.strip() or title
+
+        if task_type == "gmail":
+            action, gmail_payload, _ = n8n_service.plan_gmail_action(item_text)
+            if action == "send" and gmail_payload.get("to") and gmail_payload.get("body"):
+                metadata.update(
+                    {
+                        "gmail_to": gmail_payload["to"],
+                        "gmail_subject": gmail_payload.get("subject") or "Message from AgentCoolie",
+                        "gmail_body": gmail_payload["body"],
+                    }
+                )
+                title = f"Send email to {gmail_payload['to']}"
+                description = gmail_payload["body"]
+
+        await plan_service.ensure_active_task_slot(user_id)
+        if task_type == "gmail":
+            await plan_service.ensure_feature_available(user_id, "gmail_sends")
+        if notify_by_call:
+            await plan_service.ensure_critical_task_slot(user_id)
+            await plan_service.check_and_consume(
+                user_id,
+                "call_reminders",
+                metadata={"source": "chat_multi_task_creation", "task_type": task_type},
+            )
+            metadata["call_quota_reserved"] = True
+        await plan_service.check_and_consume(
+            user_id,
+            "task_creations",
+            metadata={"source": "chat_multi", "task_type": task_type, "notify_by_call": notify_by_call},
+        )
+
+        return await supabase_service.create_task(
+            user_id=user_id,
+            title=title,
+            description=description,
+            task_type=task_type,
+            priority=priority,
+            due_date=due_date,
+            metadata=metadata,
+        )
+
+    async def maybe_create_tasks_from_message(self, user_id: str, message: str) -> list[dict[str, Any]]:
+        """Create multiple tasks for explicit multi-task requests."""
+        message = message.strip()
+        if not message or not self._looks_like_task_request(message):
+            return []
+
+        items = _extract_multi_task_items(message)
+        if not items:
+            return []
+
+        due_date = _fallback_due_date(message)
+        if not due_date:
+            return []
+
+        tasks: list[dict[str, Any]] = []
+        for item in items:
+            tasks.append(
+                await self._create_task_from_parts(
+                    user_id,
+                    item_text=item,
+                    due_date=due_date,
+                    source_message=message,
+                )
+            )
+        return tasks
 
     async def maybe_create_task_from_message(self, user_id: str, message: str) -> Optional[dict[str, Any]]:
         message = message.strip()

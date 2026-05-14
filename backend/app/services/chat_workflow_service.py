@@ -108,6 +108,21 @@ def _format_task_created_response(task: dict[str, Any]) -> str:
     return response + "."
 
 
+def _format_tasks_created_response(tasks: list[dict[str, Any]]) -> str:
+    if not tasks:
+        return "Done. I created the task in your Tasks page."
+    if len(tasks) == 1:
+        return _format_task_created_response(tasks[0])
+
+    lines = ["Done. I created these tasks in your Tasks page:"]
+    for index, task in enumerate(tasks, start=1):
+        title = str(task.get("title") or "Task").strip()
+        due = task.get("due_date")
+        suffix = f" for {due}" if due else ""
+        lines.append(f"{index}. {title}{suffix}")
+    return "\n".join(lines)
+
+
 def _compose_leave_email(recipient: str, date_text: str, reason: str, sender_name: str | None) -> dict[str, str]:
     name = " ".join(str(sender_name or "").split()) or "Restitutor Orbis"
     reason_text = reason or "leave"
@@ -239,15 +254,18 @@ class ChatWorkflowService:
         merged = {**preferences, **(saved or {})}
         return _format_preferences_saved(merged), merged
 
-    async def _maybe_create_task(self, user_id: str, message: str) -> tuple[dict[str, Any] | None, str | None]:
+    async def _maybe_create_tasks(self, user_id: str, message: str) -> tuple[list[dict[str, Any]], str | None]:
         try:
+            tasks = await task_intent_service.maybe_create_tasks_from_message(user_id, message)
+            if tasks:
+                return tasks, None
             task = await task_intent_service.maybe_create_task_from_message(user_id, message)
-            return task, None
+            return ([task] if task else []), None
         except HTTPException:
             raise
         except Exception as e:
             logger.warning(f"Could not create task from message for {user_id}: {e}")
-            return None, str(e)
+            return [], str(e)
 
     async def _remember_profile_name(self, user_id: str, user_name: str | None) -> None:
         name = " ".join(str(user_name or "").strip().split())
@@ -391,10 +409,10 @@ class ChatWorkflowService:
         user_id: str,
         message: str,
         conversation_id: str | None = None,
-    ) -> tuple[str | None, dict[str, Any] | None, str | None]:
+    ) -> tuple[str | None, list[dict[str, Any]], str | None]:
         text = (message or "").strip()
         if not text:
-            return None, None, None
+            return None, [], None
 
         pending = await redis_memory_service.get_state(user_id, "task", conversation_id=conversation_id)
         if pending:
@@ -407,22 +425,25 @@ class ChatWorkflowService:
                     {"message": combined},
                     conversation_id=conversation_id,
                 )
-                return "Got it. What date and time should I do this?", None, None
+                return "Got it. What date and time should I do this?", [], None
 
-            task = await task_intent_service.maybe_create_task_from_message(user_id, combined)
+            tasks = await task_intent_service.maybe_create_tasks_from_message(user_id, combined)
+            if not tasks:
+                task = await task_intent_service.maybe_create_task_from_message(user_id, combined)
+                tasks = [task] if task else []
             await redis_memory_service.delete_state(user_id, "task", conversation_id=conversation_id)
-            if task:
-                return None, task, None
-            return "I could not save that task. Please send the task and time in one message.", None, "task_parse_failed"
+            if tasks:
+                return None, tasks, None
+            return "I could not save that task. Please send the task and time in one message.", [], "task_parse_failed"
 
         if not task_intent_service._looks_like_task_request(text):
-            return None, None, None
+            return None, [], None
 
         if _fallback_due_date(text):
-            return None, None, None
+            return None, [], None
 
         await redis_memory_service.set_state(user_id, "task", {"message": text}, conversation_id=conversation_id)
-        return "Sure. When should I do this task?", None, None
+        return "Sure. When should I do this task?", [], None
 
     @traceable(name="chat_workflow.process", run_type="chain")
     async def process(
@@ -459,13 +480,13 @@ class ChatWorkflowService:
         )
         if updated_preferences:
             preferences = updated_preferences
-        pending_task_response, created_task, task_error = await self._handle_pending_task(
+        pending_task_response, created_tasks, task_error = await self._handle_pending_task(
             user_id,
             original_message or effective_message,
             conversation_id=conversation_id,
         )
-        if not pending_task_response and not created_task and not task_error:
-            created_task, task_error = await self._maybe_create_task(user_id, original_message or effective_message)
+        if not pending_task_response and not created_tasks and not task_error:
+            created_tasks, task_error = await self._maybe_create_tasks(user_id, original_message or effective_message)
 
         web_results: list[dict[str, Any]] = []
         web_search_attempted = False
@@ -494,8 +515,8 @@ class ChatWorkflowService:
         if preference_response:
             response = preference_response
             tool_used = "preferences"
-        elif created_task:
-            response = _format_task_created_response(created_task)
+        elif created_tasks:
+            response = _format_tasks_created_response(created_tasks)
             tool_used = "tasks"
         elif pending_response:
             response = pending_response
@@ -575,7 +596,8 @@ class ChatWorkflowService:
             "assistant_message": assistant_message,
             "tool_used": tool_used,
             "tool_status": tool_status,
-            "task": created_task,
+            "task": created_tasks[0] if len(created_tasks) == 1 else None,
+            "tasks": created_tasks,
             "preferences": updated_preferences,
             "web_search_attempted": web_search_attempted,
         }

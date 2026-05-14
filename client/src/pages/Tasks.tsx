@@ -354,7 +354,7 @@ export default function Tasks() {
     }
   };
 
-    const openYoutubeFromTask = async (task: Task) => {
+    const openYoutubeFromTask = async (task: Task): Promise<boolean> => {
       try {
         // Try extract a YouTube URL/time from the task description
         const msg = task.description || '';
@@ -412,6 +412,7 @@ export default function Tasks() {
             if (w) {
               try { w.opener = null; } catch (e) {}
               try { w.focus(); } catch (e) {}
+              return true;
             }
           } catch (e) {
             console.warn('Failed to open YouTube from task', e);
@@ -420,7 +421,80 @@ export default function Tasks() {
       } catch (e) {
         console.error('openYoutubeFromTask error', e);
       }
+      return false;
     };
+
+  const openWebsiteFromTask = async (task: Task): Promise<boolean> => {
+    const msg = task.description || task.title || '';
+    const explicit = msg.match(/https?:\/\/[^\s]+/i)?.[0];
+    const host = msg.match(/\b([a-z0-9-]+\.)+[a-z]{2,}\b/i)?.[0];
+    const fallback = msg
+      .replace(/\b(can|could|would)\s+(u|you)\b/gi, ' ')
+      .replace(/\b(open|visit|go to|website|site)\b/gi, ' ')
+      .replace(/[^\w.-]+/g, ' ')
+      .trim()
+      .split(/\s+/)[0];
+    const url = explicit || (host ? `https://${host}` : fallback ? `https://${fallback}.com` : null);
+    if (!url) return false;
+    try {
+      const w = window.open(url, '_blank');
+      if (!w) return false;
+      try { w.opener = null; } catch (e) {}
+      try { w.focus(); } catch (e) {}
+      return true;
+    } catch (e) {
+      console.warn('Failed to open website from task', e);
+      return false;
+    }
+  };
+
+  const patchTaskStatus = async (task: Task, status: 'pending' | 'sent' | 'failed', message: string) => {
+    const token = await getIdToken();
+    if (!token) {
+      toast({ title: 'Not signed in', description: 'Please sign in to update tasks.', variant: 'destructive' });
+      return null;
+    }
+    const resp = await apiFetch(`/api/reminders/${task.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        status,
+        execution_message: message,
+        last_attempt_at: new Date().toISOString(),
+      }),
+    });
+    const payload = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      toast({
+        title: 'Task update failed',
+        description: payload?.detail || payload?.message || 'Could not update this task.',
+        variant: 'destructive',
+      });
+      return null;
+    }
+    const updatedTask = reminderRowToTask(payload, task.createdAt);
+    setTasks((prev) => prev.map((item) => (item.id === task.id ? updatedTask : item)));
+    return updatedTask;
+  };
+
+  const handleOpenTask = (id: string) => {
+    const task = tasks.find((item) => item.id === id);
+    if (!task) return;
+    (async () => {
+      const opened = task.type === 'youtube'
+        ? await openYoutubeFromTask(task)
+        : task.type === 'website'
+          ? await openWebsiteFromTask(task)
+          : false;
+      if (!opened) {
+        await patchTaskStatus(task, 'failed', 'Your browser blocked the tab. Click Open now again or allow pop-ups for AgentCoolie.');
+        toast({ title: 'Browser blocked the tab', description: 'Allow pop-ups for AgentCoolie, then click Open now again.', variant: 'destructive' });
+        return;
+      }
+      await patchTaskStatus(task, 'sent', `${task.type === 'youtube' ? 'YouTube' : 'Website'} opened in the browser.`);
+      toast({ title: 'Task opened', description: task.title });
+    })();
+  };
 
   const handleToggle = (id: string) => {
     const task = tasks.find((t) => t.id === id);
@@ -456,11 +530,17 @@ export default function Tasks() {
           setTasks((prev) => prev.map((item) => (item.id === id ? updatedTask : item)));
           toast({ title: 'Task updated', description: `Task ${task.title} marked ${newStatus === 'sent' ? 'complete' : 'pending'}` });
           if (newStatus === 'sent') {
-            addNotification({ id: task.id, title: task.title, description: task.description, type: task.type, completedAt: new Date() });
-            // If this is a YouTube task, open the video when marked sent/completed
-            if (task.type === 'youtube') {
-              openYoutubeFromTask(task);
+            if (task.type === 'youtube' || task.type === 'website') {
+              const opened = task.type === 'youtube'
+                ? await openYoutubeFromTask(task)
+                : await openWebsiteFromTask(task);
+              if (!opened) {
+                await patchTaskStatus(task, 'failed', 'Your browser blocked the tab. Click Open now again or allow pop-ups for AgentCoolie.');
+                toast({ title: 'Browser blocked the tab', description: 'Allow pop-ups for AgentCoolie, then click Open now again.', variant: 'destructive' });
+                return;
+              }
             }
+            addNotification({ id: task.id, title: task.title, description: task.description, type: task.type, completedAt: new Date() });
           }
         } catch (err) {
           console.error(err);
@@ -849,6 +929,7 @@ export default function Tasks() {
                         task={task}
                         onToggle={handleToggle}
                         onDelete={handleDelete}
+                        onOpen={handleOpenTask}
                       />
                     </div>
                   ))}
@@ -878,6 +959,7 @@ export default function Tasks() {
                         task={task}
                         onToggle={handleToggle}
                         onDelete={handleDelete}
+                        onOpen={handleOpenTask}
                       />
                     </div>
                   ))}
@@ -907,6 +989,7 @@ export default function Tasks() {
                         task={task}
                         onToggle={handleToggle}
                         onDelete={handleDelete}
+                        onOpen={handleOpenTask}
                       />
                     </div>
                   ))}
