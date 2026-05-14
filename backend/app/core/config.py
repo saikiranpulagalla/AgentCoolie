@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     REDIS_URL: Optional[str] = "redis://localhost:6379/0"
     REDIS_MEMORY_TTL_SECONDS: int = 86400
     REDIS_MEMORY_CONTEXT_EXCHANGES: int = 5
-    REDIS_MEMORY_MAX_MESSAGES: int = 10
+    REDIS_MEMORY_MAX_MESSAGES: int = 30
 
     # Long-term memory
     LONG_TERM_MEMORY_ENABLED: bool = True
@@ -89,6 +89,14 @@ class Settings(BaseSettings):
 
     # Session
     SESSION_SECRET_KEY: str = "your-secret-key-change-in-production"
+    OAUTH_STATE_MAX_AGE_SECONDS: int = 600
+
+    # Billing
+    DEMO_BILLING_ENABLED: bool = False
+
+    # Upload limits
+    MAX_ATTACHMENT_COUNT: int = 4
+    MAX_UPLOAD_BYTES: int = 25 * 1024 * 1024
 
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:8000"]

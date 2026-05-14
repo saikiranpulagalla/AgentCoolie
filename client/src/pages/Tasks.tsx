@@ -43,14 +43,10 @@ export default function Tasks() {
 
     console.log('User authenticated, fetching reminders for:', user.uid);
     setLoading(true);
+    setTasks([]);
     const cacheKey = `cached_reminders_${user.uid}`;
-    // Migrate legacy global cache to per-user cache and clear legacy to avoid cross-user leakage
     try {
       const legacy = localStorage.getItem('cached_reminders');
-      const existingPerUser = localStorage.getItem(cacheKey);
-      if (legacy && !existingPerUser) {
-        localStorage.setItem(cacheKey, legacy);
-      }
       if (legacy) {
         localStorage.removeItem('cached_reminders');
       }
@@ -507,24 +503,6 @@ export default function Tasks() {
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const handleSubmit = async () => {
-    // Prevent creating Gmail tasks if credentials are not saved in Settings
-    const integrationType = formType === 'gmail' ? 'gmail' : null;
-    if (integrationType) {
-      try {
-        const uid = user?.uid || localStorage.getItem('userId');
-        // Accept both uid-scoped flag (has_gmail_<uid>) and legacy/global flag (has_gmail)
-        let flag: string | null = null;
-        if (uid) flag = localStorage.getItem(`has_${integrationType}_${uid}`);
-        if (!flag) flag = localStorage.getItem(`has_${integrationType}`);
-        if (flag !== 'true' && flag !== '1' && !flag) {
-          setErrors({ ...errors, credentials: `Please add ${integrationType} credentials in Settings before creating ${integrationType} tasks.` });
-          toast({ title: 'Missing credentials', description: `Go to Settings and save your ${integrationType} credentials to enable ${integrationType} tasks.`, variant: 'destructive' });
-          return;
-        }
-      } catch (e) {
-        // ignore storage errors
-      }
-    }
     const newErrors: Record<string, string> = {};
     if (!formMessage) newErrors.message = 'Message is required';
     // validate datetime
@@ -535,9 +513,6 @@ export default function Tasks() {
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       if (!formEmail) newErrors.email = 'Email is required for Gmail reminders';
       else if (!emailRegex.test(formEmail)) newErrors.email = 'Please provide a valid email address';
-      else if (!formEmail.toLowerCase().endsWith('@gmail.com') && !formEmail.toLowerCase().endsWith('@googlemail.com')) {
-        newErrors.email = 'Please provide a Gmail address (gmail.com)';
-      }
     }
     if (notifyByCall && formCallPhone.trim()) {
       const phoneRegex = /^\+[1-9]\d{7,14}$/;
@@ -556,7 +531,7 @@ export default function Tasks() {
       // formDatetime is in local 'YYYY-MM-DDTHH:mm' format; parse as local and convert to ISO UTC
       const localDate = new Date(formDatetime);
       const sendType = formType;
-      const payload: any = { user_id: user?.uid, type: sendType, message: formMessage, datetime: localDate.toISOString() };
+      const payload: any = { type: sendType, message: formMessage, datetime: localDate.toISOString() };
       if (formType === 'gmail') { payload.user_email = formEmail; }
       if (notifyByCall) {
         payload.notify_by_call = true;

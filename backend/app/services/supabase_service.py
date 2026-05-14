@@ -37,6 +37,9 @@ class SupabaseService:
 
     def __init__(self):
         """Initialize Supabase client lazily on first use."""
+        if getattr(self, "_constructed", False):
+            return
+        self._constructed = True
         self._initialized = False
         self._client = None
 
@@ -54,7 +57,8 @@ class SupabaseService:
             self._initialized = True
         except Exception as e:
             logger.error(f"Supabase initialization failed: {e}")
-            self._initialized = True  # Mark as attempted to prevent retry storm
+            self._client = None
+            self._initialized = False
             raise  # Re-raise so caller knows initialization failed
 
     @property
@@ -65,6 +69,14 @@ class SupabaseService:
             raise RuntimeError("Supabase client not initialized - check credentials")
         return self._client
 
+    def is_configured(self) -> bool:
+        """Return whether required Supabase settings are present."""
+        return bool(settings.SUPABASE_URL and settings.SUPABASE_SERVICE_ROLE_KEY)
+
+    def is_ready(self) -> bool:
+        """Return whether the lazy client has initialized successfully."""
+        return self._client is not None and self._initialized
+
     # ============ User Operations ============
     async def get_user_by_firebase_id(self, firebase_id: str) -> Optional[Dict[str, Any]]:
         """Get user by Firebase ID."""
@@ -72,6 +84,8 @@ class SupabaseService:
             def _get():
                 return self.client.table("users").select("*").eq("firebase_id", firebase_id).single().execute()
             response = await asyncio.to_thread(_get)
+            if isinstance(response.data, dict):
+                return response.data
             return response.data[0] if response.data else None
         except Exception as e:
             logger.warning(f"User not found: {firebase_id}")
@@ -104,29 +118,63 @@ class SupabaseService:
             raise
 
     # ============ Chat Message Operations ============
-    async def create_message(self, user_id: str, content: str, role: str, model: Optional[str] = None) -> Dict[str, Any]:
+    async def create_message(
+        self,
+        user_id: str,
+        content: str,
+        role: str,
+        model: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Create a chat message."""
         try:
+            payload = {
+                "user_id": user_id,
+                "content": content,
+                "role": role,
+                "model": model,
+            }
+            if conversation_id:
+                payload["conversation_id"] = conversation_id
+
             def _create():
-                return self.client.table("chat_messages").insert({
-                    "user_id": user_id,
-                    "content": content,
-                    "role": role,
-                    "model": model,
-                }).execute()
-            response = await asyncio.to_thread(_create)
+                return self.client.table("chat_messages").insert(payload).execute()
+
+            try:
+                response = await asyncio.to_thread(_create)
+            except Exception as e:
+                if conversation_id and "conversation_id" in str(e):
+                    payload.pop("conversation_id", None)
+                    response = await asyncio.to_thread(_create)
+                else:
+                    raise
             return response.data[0]
         except Exception as e:
             logger.error(f"Failed to create message: {e}")
             raise
 
-    async def get_messages(self, user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+    async def get_messages(
+        self,
+        user_id: str,
+        limit: int = 50,
+        conversation_id: Optional[str] = None,
+        since_iso: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """Get recent chat messages."""
         try:
             def _get():
-                return self.client.table("chat_messages").select("*").eq("user_id", user_id).order("created_at", desc=True).limit(limit).execute()
+                query = self.client.table("chat_messages").select("*").eq("user_id", user_id)
+                if conversation_id:
+                    query = query.eq("conversation_id", conversation_id)
+                if since_iso:
+                    query = query.gte("created_at", since_iso)
+                return query.order("created_at", desc=True).limit(limit).execute()
             response = await asyncio.to_thread(_get)
-            return response.data[::-1]  # Reverse to get chronological order
+            rows = response.data[::-1]  # Reverse to get chronological order
+            for row in rows:
+                if "timestamp" not in row and row.get("created_at"):
+                    row["timestamp"] = row.get("created_at")
+            return rows
         except Exception as e:
             logger.error(f"Failed to get messages for user {user_id}: {e}")
             return []
@@ -205,6 +253,22 @@ class SupabaseService:
                 raise
             return []
 
+    async def count_long_term_memories(self, user_id: str) -> int:
+        """Count durable memories for a user."""
+        try:
+            def _count():
+                return (
+                    self.client.table("long_term_memories")
+                    .select("id", count="exact")
+                    .eq("user_id", user_id)
+                    .execute()
+                )
+            response = await asyncio.to_thread(_count)
+            return int(response.count or 0)
+        except Exception as e:
+            logger.error(f"Failed to count long-term memories for user {user_id}: {e}")
+            raise
+
     # ============ Task Operations ============
     async def create_task(
         self,
@@ -248,6 +312,25 @@ class SupabaseService:
             if is_connectivity_error(e):
                 raise
             return []
+
+    async def count_active_tasks(self, user_id: str, notify_by_call: bool | None = None) -> int:
+        """Count tasks still active for quota enforcement."""
+        try:
+            def _count():
+                query = (
+                    self.client.table("tasks")
+                    .select("id", count="exact")
+                    .eq("user_id", user_id)
+                    .in_("status", ["pending", "calling"])
+                )
+                if notify_by_call is True:
+                    query = query.contains("metadata", {"notify_by_call": True})
+                return query.execute()
+            response = await asyncio.to_thread(_count)
+            return int(response.count or 0)
+        except Exception as e:
+            logger.error(f"Failed to count active tasks for user {user_id}: {e}")
+            raise
 
     async def get_due_pending_tasks(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Get due pending tasks across users for backend-side automation."""
@@ -538,6 +621,145 @@ class SupabaseService:
             if is_connectivity_error(e):
                 raise
             return []
+
+    # ============ Plan and Usage Operations ============
+    async def get_user_plan(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Get a user's billing/entitlement row."""
+        try:
+            def _get():
+                return (
+                    self.client.table("user_plans")
+                    .select("*")
+                    .eq("user_id", user_id)
+                    .limit(1)
+                    .execute()
+                )
+            response = await asyncio.to_thread(_get)
+            return response.data[0] if response.data else None
+        except Exception as e:
+            logger.error(f"Failed to get user plan for {user_id}: {e}")
+            if is_connectivity_error(e):
+                raise
+            return None
+
+    async def upsert_user_plan(
+        self,
+        user_id: str,
+        plan: str,
+        billing_status: str,
+        provider: Optional[str] = None,
+        provider_customer_id: Optional[str] = None,
+        provider_subscription_id: Optional[str] = None,
+        current_period_start: Optional[str] = None,
+        current_period_end: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create or update a user's plan row."""
+        try:
+            payload = {
+                "user_id": user_id,
+                "plan": plan,
+                "billing_status": billing_status,
+                "provider": provider,
+                "provider_customer_id": provider_customer_id,
+                "provider_subscription_id": provider_subscription_id,
+                "current_period_start": current_period_start,
+                "current_period_end": current_period_end,
+            }
+
+            def _upsert():
+                return (
+                    self.client.table("user_plans")
+                    .upsert(payload, on_conflict="user_id")
+                    .execute()
+                )
+            response = await asyncio.to_thread(_upsert)
+            return response.data[0] if response.data else {}
+        except Exception as e:
+            logger.error(f"Failed to upsert user plan for {user_id}: {e}")
+            if is_connectivity_error(e):
+                raise
+            raise
+
+    async def create_usage_event(
+        self,
+        user_id: str,
+        feature: str,
+        amount: int = 1,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Record one billable/limited usage event."""
+        try:
+            def _create():
+                return self.client.table("usage_events").insert({
+                    "user_id": user_id,
+                    "feature": feature,
+                    "amount": max(1, int(amount or 1)),
+                    "metadata": metadata or {},
+                }).execute()
+            response = await asyncio.to_thread(_create)
+            return response.data[0] if response.data else {}
+        except Exception as e:
+            logger.error(f"Failed to create usage event {feature} for {user_id}: {e}")
+            raise
+
+    async def consume_usage_quota(
+        self,
+        user_id: str,
+        feature: str,
+        amount: int,
+        metadata: Optional[Dict[str, Any]],
+        day_start: Optional[str] = None,
+        day_limit: Optional[int] = None,
+        month_start: Optional[str] = None,
+        month_limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Atomically check quota and record usage through a Postgres RPC."""
+        try:
+            payload = {
+                "p_user_id": user_id,
+                "p_feature": feature,
+                "p_amount": max(1, int(amount or 1)),
+                "p_metadata": metadata or {},
+                "p_day_start": day_start,
+                "p_day_limit": day_limit,
+                "p_month_start": month_start,
+                "p_month_limit": month_limit,
+            }
+
+            def _consume():
+                return self.client.rpc("consume_usage_quota", payload).execute()
+
+            response = await asyncio.to_thread(_consume)
+            data = response.data
+            if isinstance(data, list):
+                return data[0] if data else {}
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            logger.error(f"Failed to atomically consume usage {feature} for {user_id}: {e}")
+            if is_connectivity_error(e):
+                raise
+            raise
+
+    async def count_usage_events(self, user_id: str, feature: str, since: str) -> int:
+        """Sum usage amount for a feature since an ISO timestamp."""
+        try:
+            def _get():
+                return (
+                    self.client.table("usage_events")
+                    .select("amount")
+                    .eq("user_id", user_id)
+                    .eq("feature", feature)
+                    .gte("occurred_at", since)
+                    .execute()
+                )
+            response = await asyncio.to_thread(_get)
+            total = 0
+            for row in response.data or []:
+                total += int(row.get("amount") or 1)
+            return total
+        except Exception as e:
+            logger.error(f"Failed to count usage events {feature} for {user_id}: {e}")
+            raise
 
 
 # Initialize singleton instance

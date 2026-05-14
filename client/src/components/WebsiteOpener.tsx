@@ -20,12 +20,16 @@ export function WebsiteOpener() {
         body: JSON.stringify({ query: website })
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data?.detail || data?.message || 'Failed to open website');
+      }
 
-      if (data.status === 'success') {
+      if (data.status === 'success' && data.final_url) {
+        window.open(data.final_url, '_blank', 'noopener,noreferrer');
         toast({
           title: 'Success',
-          description: 'Opening website...'
+          description: 'Opening website...',
         });
       } else {
         toast({
@@ -34,10 +38,10 @@ export function WebsiteOpener() {
           variant: 'destructive'
         });
       }
-    } catch (error) {
+    } catch (error: any) {
       toast({
         title: 'Error',
-        description: 'Failed to open website',
+        description: error?.message || 'Failed to open website',
         variant: 'destructive'
       });
     } finally {

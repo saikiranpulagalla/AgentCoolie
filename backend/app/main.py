@@ -5,12 +5,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from app.core.config import settings
 from app.services.call_task_scheduler import call_task_scheduler
+from app.services.firebase_service import firebase_service
+from app.services.supabase_service import supabase_service
 from app.routes import (
     auth_router,
     chat_router,
     tasks_router,
     whatsapp_router,
-    gmail_router,
     website_router,
     youtube_router,
     notifications_router,
@@ -19,6 +20,7 @@ from app.routes import (
     preferences_router,
     integrations_router,
     oauth_router,
+    billing_router,
 )
 import logging
 
@@ -54,10 +56,17 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 @app.get("/health")
 async def health_check() -> dict:
     """Health check endpoint."""
+    checks = {
+        "firebase": firebase_service.is_ready(),
+        "supabase_configured": supabase_service.is_configured(),
+        "supabase_initialized": supabase_service.is_ready(),
+    }
+    production_ready = checks["firebase"] and checks["supabase_configured"]
     return {
-        "status": "healthy",
+        "status": "healthy" if settings.ENV == "development" or production_ready else "degraded",
         "environment": settings.ENV,
         "version": "2.0.0",
+        "checks": checks,
     }
 
 
@@ -66,7 +75,6 @@ app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(tasks_router)
 app.include_router(whatsapp_router)
-app.include_router(gmail_router)
 app.include_router(website_router)
 app.include_router(youtube_router)
 app.include_router(notifications_router)
@@ -75,6 +83,7 @@ app.include_router(search_router)
 app.include_router(preferences_router)
 app.include_router(integrations_router)
 app.include_router(oauth_router)
+app.include_router(billing_router)
 
 
 # Root endpoint

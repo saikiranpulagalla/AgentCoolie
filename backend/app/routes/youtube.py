@@ -12,13 +12,15 @@ from app.services import (
     supabase_service,
     chat_workflow_service,
     redis_memory_service,
+    plan_service,
 )
-from app.agents import ChatAgent
 from app.services.ai_service import extract_pdf_text_with_metadata
+from app.core.config import settings
 import logging
 import json
 import base64
 import re
+import asyncio
 from urllib.parse import quote_plus
 
 import requests
@@ -70,73 +72,32 @@ def _search_youtube_first_video(query: str) -> dict | None:
     return None
 
 
+async def _search_youtube_first_video_async(query: str) -> dict | None:
+    return await asyncio.to_thread(_search_youtube_first_video, query)
+
+
+def _estimated_base64_size(value: str) -> int:
+    clean = re.sub(r"\s+", "", value or "")
+    padding = clean.count("=")
+    return max(0, (len(clean) * 3) // 4 - padding)
+
+
+def _enforce_upload_size(name: str, byte_count: int) -> None:
+    max_bytes = int(settings.MAX_UPLOAD_BYTES or 0)
+    if max_bytes > 0 and byte_count > max_bytes:
+        max_mb = max_bytes / (1024 * 1024)
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"{name} is too large. Maximum upload size is {max_mb:.0f} MB.",
+        )
+
+
 async def _get_preferences_for_prompt(user_id: str) -> dict | None:
     try:
         return await supabase_service.get_preferences(user_id)
     except Exception as e:
         logger.warning(f"Skipping personalization context for {user_id}: {e}")
         return None
-
-
-async def _maybe_create_task(user_id: str, message: str) -> tuple[dict | None, str | None]:
-    try:
-        task = await task_intent_service.maybe_create_task_from_message(user_id, message)
-        return task, None
-    except Exception as e:
-        logger.warning(f"Could not create task from webhook message for {user_id}: {e}")
-        return None, str(e)
-
-
-async def _remember_profile_name(user_id: str, user_name: str | None) -> None:
-    name = " ".join(str(user_name or "").strip().split())
-    if not name or name.lower() in {"anonymous", "user", "none", "null"}:
-        return
-
-    try:
-        await long_term_memory_service.remember_fact(
-            user_id=user_id,
-            content=f"User's display name is {name}.",
-            score=0.8,
-            reason="Firebase profile display name.",
-            source="profile",
-        )
-    except Exception as e:
-        logger.debug(f"Could not save profile display name memory for {user_id}: {e}")
-
-
-def _looks_like_gmail_action(message: str) -> bool:
-    text = message.lower()
-    if not any(word in text for word in ("gmail", "email", "mail", "inbox")):
-        return False
-    return any(
-        phrase in text
-        for phrase in (
-            "send",
-            "draft",
-            "reply",
-            "read",
-            "check",
-            "search",
-            "summarize",
-            "latest",
-            "unread",
-        )
-    )
-
-
-def _format_n8n_result(result: dict) -> str:
-    body = result.get("body")
-    if isinstance(body, dict):
-        for key in ("response", "message", "text", "summary", "result", "output"):
-            value = body.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        return json.dumps(body, indent=2)
-    if isinstance(body, list):
-        return json.dumps(body, indent=2)
-    if body:
-        return str(body)
-    return "Gmail workflow completed."
 
 
 def get_current_user(authorization: str = Header(None)) -> str:
@@ -207,13 +168,19 @@ async def detect_youtube_video(
                 "video": None
             }
 
+        await plan_service.check_and_consume(
+            user_id,
+            "youtube_opens",
+            metadata={"source": "youtube_api"},
+        )
+
         looks_like_video = bool(
             re.search(r"\b(open|play|show|find|search|watch)\b", query, re.I)
             and re.search(r"\b(song|video|youtube|trailer|clip)\b", query, re.I)
         )
         if looks_like_video:
             try:
-                video = _search_youtube_first_video(query)
+                video = await _search_youtube_first_video_async(query)
                 if video:
                     return {
                         "status": "success",
@@ -250,7 +217,7 @@ User message: {query}"""
             video_info = result.get("video", None)
             if is_video_request and confidence > 0.6 and not (isinstance(video_info, dict) and video_info.get("url")):
                 try:
-                    video_info = _search_youtube_first_video(query)
+                    video_info = await _search_youtube_first_video_async(query)
                 except Exception as e:
                     logger.warning(f"YouTube fallback search failed: {e}")
             
@@ -271,6 +238,8 @@ User message: {query}"""
                 "video": None
             }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"YouTube detection error: {e}")
         # Return graceful failure instead of 500 - video detection is optional
@@ -320,6 +289,12 @@ async def webhook_proxy(
             conversation_id = form_data.get("conversationId") or form_data.get("conversation_id")
             files = form_data.getlist("files") if "files" in form_data else []
             attachments = []
+
+        if len(attachments or []) > settings.MAX_ATTACHMENT_COUNT:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Too many attachments. Maximum is {settings.MAX_ATTACHMENT_COUNT}.",
+            )
         
         image_attachment = next(
             (
@@ -340,6 +315,11 @@ async def webhook_proxy(
             None,
         )
         file_attachments = [file for file in files if hasattr(file, "read")]
+        if len(file_attachments) > settings.MAX_ATTACHMENT_COUNT:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Too many files. Maximum is {settings.MAX_ATTACHMENT_COUNT}.",
+            )
         image_file = next(
             (
                 file for file in file_attachments
@@ -396,6 +376,9 @@ async def webhook_proxy(
         if image_attachment and gemini_service:
             image_url = str(image_attachment.get("url", ""))
             image_base64 = image_url.split(",", 1)[1] if "," in image_url else image_url
+            image_size = _estimated_base64_size(image_base64)
+            await plan_service.consume_upload(user_id, "image", image_size)
+            _enforce_upload_size(str(image_attachment.get("name") or "Image"), image_size)
             image_summary = await gemini_service.analyze_image(
                 image_base64,
                 prompt=f"Describe the image and extract any text relevant to this user request: {message}",
@@ -403,6 +386,8 @@ async def webhook_proxy(
             attachment_context.append(f"Image analysis: {image_summary}")
         if image_file and gemini_service:
             image_bytes = await image_file.read()
+            await plan_service.consume_upload(user_id, "image", len(image_bytes))
+            _enforce_upload_size(str(getattr(image_file, "filename", None) or "Image"), len(image_bytes))
             image_base64 = base64.b64encode(image_bytes).decode("ascii")
             image_summary = await gemini_service.analyze_image(
                 image_base64,
@@ -412,7 +397,11 @@ async def webhook_proxy(
         if pdf_attachment:
             pdf_url = str(pdf_attachment.get("url", ""))
             pdf_base64 = pdf_url.split(",", 1)[1] if "," in pdf_url else pdf_url
-            pdf_info = extract_pdf_text_with_metadata(pdf_base64)
+            pdf_size = _estimated_base64_size(pdf_base64)
+            plan = await plan_service.consume_upload(user_id, "pdf", pdf_size)
+            _enforce_upload_size(str(pdf_attachment.get("name") or "PDF"), pdf_size)
+            max_pages = int(plan.get("caps", {}).get("max_pdf_pages") or 25)
+            pdf_info = extract_pdf_text_with_metadata(pdf_base64, max_pages=max_pages)
             pdf_text = str(pdf_info.get("text") or "")
             if pdf_text:
                 await redis_memory_service.set_state(
@@ -433,8 +422,11 @@ async def webhook_proxy(
                 attachment_context.append(f"PDF text excerpt ({limit_note}): {pdf_text}")
         if pdf_file:
             pdf_bytes = await pdf_file.read()
+            plan = await plan_service.consume_upload(user_id, "pdf", len(pdf_bytes))
+            _enforce_upload_size(str(getattr(pdf_file, "filename", None) or "PDF"), len(pdf_bytes))
             pdf_base64 = base64.b64encode(pdf_bytes).decode("ascii")
-            pdf_info = extract_pdf_text_with_metadata(pdf_base64)
+            max_pages = int(plan.get("caps", {}).get("max_pdf_pages") or 25)
+            pdf_info = extract_pdf_text_with_metadata(pdf_base64, max_pages=max_pages)
             pdf_text = str(pdf_info.get("text") or "")
             if pdf_text:
                 await redis_memory_service.set_state(
@@ -455,6 +447,8 @@ async def webhook_proxy(
                 attachment_context.append(f"PDF text excerpt ({limit_note}): {pdf_text}")
         if audio_file and gemini_service:
             audio_bytes = await audio_file.read()
+            await plan_service.consume_upload(user_id, "audio", len(audio_bytes))
+            _enforce_upload_size(str(getattr(audio_file, "filename", None) or "Audio"), len(audio_bytes))
             audio_base64 = base64.b64encode(audio_bytes).decode("ascii")
             try:
                 transcript = await gemini_service.transcribe_audio(
@@ -542,6 +536,8 @@ async def webhook_proxy_json(
             "preferences": result.get("preferences"),
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Webhook JSON proxy error: {e}")
         raise HTTPException(

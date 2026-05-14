@@ -23,7 +23,10 @@ def get_current_user(authorization: str = Header(None)) -> str:
         token = parts[1]
         
         decoded = firebase_service.verify_id_token(token)
-        return decoded.get("uid")
+        user_id = decoded.get("uid")
+        if not user_id:
+            raise ValueError("Invalid token: missing uid")
+        return user_id
     except ValueError as e:
         raise HTTPException(status_code=401, detail=str(e))
 

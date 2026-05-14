@@ -8,9 +8,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.core.config import settings
-from app.services.n8n_service import n8n_service
 from app.services.call_reminder_service import call_reminder_service
+from app.services.plan_service import plan_service
 from app.services.supabase_service import is_connectivity_error, supabase_service
+from app.services.task_execution_service import execute_gmail_task
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +54,6 @@ class CallTaskScheduler:
                 continue
 
     async def run_once(self) -> None:
-        if not await call_reminder_service.is_configured():
-            return
-
         try:
             due_tasks = await supabase_service.get_due_pending_tasks(limit=25)
         except Exception as e:
@@ -99,6 +97,11 @@ class CallTaskScheduler:
                 return
 
             task_type = str(task.get("type") or "general")
+            await plan_service.check_and_consume(
+                user_id,
+                "task_executions",
+                metadata={"source": "backend_scheduler", "task_type": task_type, "task_id": task_id},
+            )
             call_result = None
             updated_metadata = dict(metadata)
             execution_parts: list[str] = []
@@ -114,14 +117,7 @@ class CallTaskScheduler:
                 execution_parts.append(f"Call reminder placed: {call_result.get('message')}")
 
             if task_type == "gmail":
-                tool_status = await n8n_service.gmail_status(user_id)
-                if not tool_status.get("configured"):
-                    raise RuntimeError("Gmail automation is not configured on the backend.")
-                if not tool_status.get("connected"):
-                    raise RuntimeError("Gmail is not connected. Connect Gmail in Settings first.")
-                result = await n8n_service.run_gmail_action(user_id, str(task.get("description") or task.get("title") or ""))
-                if not result.get("ok"):
-                    raise RuntimeError(str(result.get("message") or result.get("body") or "Gmail workflow failed."))
+                await execute_gmail_task(user_id, task)
                 execution_parts.append("Gmail task completed.")
             elif task_type in {"youtube", "website"}:
                 # A call can be delivered server-side, but opening a browser tab

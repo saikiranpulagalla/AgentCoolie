@@ -116,6 +116,10 @@ export function ScheduledTaskRunner() {
               continue;
             }
             const executePayload = await executeResponse.json().catch(() => ({}));
+            if (executePayload?.status === "already_handled") {
+              processingIds.current.delete(task.id);
+              continue;
+            }
             const failed = executePayload?.status === "failed";
             const failedTask = executePayload?.task || {};
             const callErrorCode = failedTask?.call_error_code;

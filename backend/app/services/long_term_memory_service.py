@@ -12,6 +12,7 @@ from typing import Any
 
 from app.core.config import settings
 from app.services.ai_service import gemini_service
+from app.services.plan_service import plan_service
 from app.services.supabase_service import is_connectivity_error, supabase_service
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,15 @@ class LongTermMemoryService:
         if existing:
             logger.debug("Skipping duplicate long-term memory")
             return
+
+        if not await plan_service.ensure_long_term_memory_slot(user_id):
+            logger.info("Skipping long-term memory save because the user's plan memory cap is full")
+            return
+        await plan_service.check_and_consume(
+            user_id,
+            "long_term_memory_writes",
+            metadata={"source": source, "score": score},
+        )
 
         await supabase_service.create_long_term_memory(
             user_id=user_id,

@@ -11,6 +11,8 @@ from typing import Any, Optional
 
 from app.core.config import settings
 from app.services.ai_service import gemini_service
+from app.services.n8n_service import n8n_service
+from app.services.plan_service import plan_service
 from app.services.supabase_service import supabase_service
 
 logger = logging.getLogger(__name__)
@@ -161,6 +163,8 @@ def _extract_action_after_time(message: str) -> Optional[str]:
     )
     if relative_match:
         action = relative_match.group(1).strip(" .,-")
+        if action.lower() in {"am", "pm"}:
+            return None
         action = re.sub(r"^(?:say\s+to|tell\s+me\s+to|remind\s+me\s+to|to)\s+", "", action, flags=re.IGNORECASE)
         return action.strip() or None
 
@@ -174,6 +178,8 @@ def _extract_action_after_time(message: str) -> Optional[str]:
         return None
 
     action = match.group(1).strip(" .,-")
+    if action.lower() in {"am", "pm"}:
+        return None
     action = re.sub(r"^(?:say\s+to|tell\s+me\s+to|remind\s+me\s+to|to)\s+", "", action, flags=re.IGNORECASE)
     return action.strip() or None
 
@@ -314,6 +320,36 @@ User message: {message}"""
         if notify_by_call and priority == "medium":
             priority = "high"
         metadata = {"notify_by_call": True} if notify_by_call else {}
+        if task_type == "gmail":
+            action, gmail_payload, _ = n8n_service.plan_gmail_action(cleaned_task_text)
+            if action == "send" and gmail_payload.get("to") and gmail_payload.get("body"):
+                metadata.update(
+                    {
+                        "gmail_to": gmail_payload["to"],
+                        "gmail_subject": gmail_payload.get("subject") or "Message from AgentCoolie",
+                        "gmail_body": gmail_payload["body"],
+                    }
+                )
+                description = gmail_payload["body"]
+                if _is_generic_task_text(title) or email_in_message:
+                    title = f"Send email to {gmail_payload['to']}"
+
+        await plan_service.ensure_active_task_slot(user_id)
+        if task_type == "gmail":
+            await plan_service.ensure_feature_available(user_id, "gmail_sends")
+        if notify_by_call:
+            await plan_service.ensure_critical_task_slot(user_id)
+            await plan_service.check_and_consume(
+                user_id,
+                "call_reminders",
+                metadata={"source": "chat_task_creation", "task_type": task_type},
+            )
+            metadata["call_quota_reserved"] = True
+        await plan_service.check_and_consume(
+            user_id,
+            "task_creations",
+            metadata={"source": "chat", "task_type": task_type, "notify_by_call": notify_by_call},
+        )
 
         return await supabase_service.create_task(
             user_id=user_id,

@@ -10,7 +10,7 @@ import { getFirebaseStorage, getFirebaseAuth } from "@/lib/firebase";
 import { apiFetch, apiUrl, getApiBase } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
-import { Camera, User, Bell, Globe, Shield, PhoneCall, MessageCircle } from "lucide-react";
+import { Camera, User, Bell, Globe, Shield, PhoneCall, MessageCircle, CreditCard, Zap } from "lucide-react";
 import type { UserPreferences } from "@shared/schema";
 // Textarea not needed for masked secrets; using Input (password) instead
 
@@ -38,6 +38,7 @@ export default function Settings() {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [planSummary, setPlanSummary] = useState<any>(null);
 
   const clearGmailCredentialFlags = (uid?: string | null) => {
     try {
@@ -88,6 +89,20 @@ export default function Settings() {
       return text;
     }
   };
+
+  useEffect(() => {
+    (async () => {
+      if (authLoading || !user) return;
+      try {
+        const resp = await apiFetch('/api/billing/plan');
+        if (!resp.ok) return;
+        const body = await resp.json().catch(() => null);
+        if (body) setPlanSummary(body);
+      } catch (e) {
+        console.error('Plan status check failed', e);
+      }
+    })();
+  }, [authLoading, user?.uid]);
 
   // On first mount: capture ?connected=gmail and persist to localStorage so refresh keeps state
   useEffect(() => {
@@ -157,7 +172,7 @@ export default function Settings() {
     e?.preventDefault?.();
     setSavingCreds(true);
     try {
-      const uid = user?.uid || localStorage.getItem('userId');
+      const uid = user?.uid;
       if (!uid) throw new Error('No user id');
   const headers = await getAuthHeaders();
   const saveUrl = apiUrl(ENDPOINTS.gmail.save);
@@ -484,6 +499,61 @@ export default function Settings() {
               >
                 Save Profile Changes
               </Button>
+            </div>
+          </div>
+        </Card>
+
+        <Card className="p-8 backdrop-blur-xl bg-card/80 border-2 hover-elevate transition-all duration-500 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-150 relative overflow-hidden">
+          <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent rounded-lg -z-10" />
+          <div className="space-y-6">
+            <div className="flex items-center gap-4">
+              <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-primary/20 to-primary/10 flex items-center justify-center">
+                <CreditCard className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <h2 className="text-2xl font-bold">Plan</h2>
+                <p className="text-sm text-muted-foreground">Companion is free. Autopilot is Rs. 499/month or $6/month.</p>
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="rounded-lg border bg-background/60 p-5">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Shield className="h-4 w-4" />
+                  Current mode
+                </div>
+                <div className="mt-2 text-2xl font-bold">
+                  {planSummary?.plan?.name || 'AgentCoolie Companion'}
+                </div>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  {planSummary?.plan?.description || 'Free personal assistant mode with light usage limits.'}
+                </p>
+              </div>
+
+              <div className="rounded-lg border bg-background/60 p-5">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Zap className="h-4 w-4" />
+                  Key limits
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <div className="font-semibold">{planSummary?.plan?.quotas?.chat_messages?.month ?? 150}/mo</div>
+                    <div className="text-muted-foreground">Chat messages</div>
+                  </div>
+                  <div>
+                    <div className="font-semibold">{planSummary?.plan?.quotas?.web_searches?.month ?? 25}/mo</div>
+                    <div className="text-muted-foreground">Web searches</div>
+                  </div>
+                  <div>
+                    <div className="font-semibold">{planSummary?.plan?.caps?.active_tasks ?? 5}</div>
+                    <div className="text-muted-foreground">Active tasks</div>
+                  </div>
+                  <div>
+                    <div className="font-semibold">{planSummary?.plan?.quotas?.call_reminders?.month ?? 1}/mo</div>
+                    <div className="text-muted-foreground">Calls</div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </Card>

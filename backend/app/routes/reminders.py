@@ -8,6 +8,8 @@ These routes map that surface onto the existing tasks table.
 import asyncio
 import json
 import logging
+import re
+import time
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -16,13 +18,16 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.services import call_reminder_service, firebase_service, n8n_service, supabase_service
+from app.services import call_reminder_service, firebase_service, plan_service, supabase_service
 from app.services.supabase_service import is_connectivity_error
+from app.services.task_execution_service import execute_gmail_task
 
 router = APIRouter(prefix="/api", tags=["reminders"])
 logger = logging.getLogger(__name__)
 
-_sse_connect_ids: set[str] = set()
+_sse_connect_ids: dict[str, dict] = {}
+SSE_CONNECT_TTL_SECONDS = 300
+SSE_MAX_IDS_PER_USER = 5
 
 
 def get_current_user(authorization: str = Header(None)) -> str:
@@ -65,6 +70,7 @@ def _task_to_reminder(row: dict) -> dict:
         "execution_message": row.get("execution_message"),
         "last_attempt_at": row.get("last_attempt_at"),
         "notify_by_call": bool(metadata.get("notify_by_call") or metadata.get("call_reminder")),
+        "gmail_to": metadata.get("gmail_to"),
         "call_status": metadata.get("call_status"),
         "call_error_code": metadata.get("call_error_code"),
         "created_at": row.get("created_at"),
@@ -95,6 +101,23 @@ def _website_url_from_message(message: str) -> str | None:
     if not candidates:
         return None
     return f"https://www.{candidates[-1]}.com"
+
+
+def _cleanup_sse_connect_ids() -> None:
+    now = time.time()
+    expired = [
+        connect_id for connect_id, data in _sse_connect_ids.items()
+        if float(data.get("expires_at") or 0) <= now
+    ]
+    for connect_id in expired:
+        _sse_connect_ids.pop(connect_id, None)
+
+
+def _valid_email(value: str | None) -> str | None:
+    email = str(value or "").strip()
+    if not email:
+        return None
+    return email if re.fullmatch(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}", email) else None
 
 
 @router.get("/reminders")
@@ -141,6 +164,14 @@ async def create_reminder(
     try:
         notify_by_call = bool(request.get("notify_by_call"))
         metadata: dict = {}
+        gmail_to = _valid_email(request.get("user_email") or request.get("gmail_to") or request.get("to"))
+        if task_type == "gmail":
+            raw_email = str(request.get("user_email") or request.get("gmail_to") or request.get("to") or "").strip()
+            if raw_email and not gmail_to:
+                raise HTTPException(status_code=400, detail="Invalid Gmail recipient email")
+            if gmail_to:
+                metadata["gmail_to"] = gmail_to
+                metadata["gmail_subject"] = request.get("subject") or "Message from AgentCoolie"
         if notify_by_call:
             metadata["notify_by_call"] = True
             call_phone = request.get("call_phone")
@@ -152,6 +183,23 @@ async def create_reminder(
                     raise HTTPException(status_code=400, detail="Call phone must be in E.164 format, e.g. +919000000000")
                 metadata["call_phone"] = normalized
 
+        await plan_service.ensure_active_task_slot(user_id)
+        if task_type == "gmail":
+            await plan_service.ensure_feature_available(user_id, "gmail_sends")
+        if notify_by_call:
+            await plan_service.ensure_critical_task_slot(user_id)
+            await plan_service.check_and_consume(
+                user_id,
+                "call_reminders",
+                metadata={"source": "reminders_api_creation", "task_type": task_type},
+            )
+            metadata["call_quota_reserved"] = True
+        await plan_service.check_and_consume(
+            user_id,
+            "task_creations",
+            metadata={"source": "reminders_api", "task_type": task_type, "notify_by_call": notify_by_call},
+        )
+
         task = await supabase_service.create_task(
             user_id=user_id,
             title=message[:40] or "Reminder",
@@ -161,6 +209,8 @@ async def create_reminder(
             due_date=due_date,
             metadata=metadata,
         )
+    except HTTPException:
+        raise
     except Exception as e:
         error_text = str(e)
         logger.error(f"Failed to create reminder task: {e}")
@@ -198,7 +248,19 @@ async def update_reminder(
             raise HTTPException(status_code=404, detail="Reminder not found")
         metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
         if "notify_by_call" in request:
-            metadata["notify_by_call"] = bool(request.get("notify_by_call"))
+            previous_notify_by_call = bool(metadata.get("notify_by_call") or metadata.get("call_reminder"))
+            next_notify_by_call = bool(request.get("notify_by_call"))
+            if next_notify_by_call and not previous_notify_by_call:
+                await plan_service.ensure_critical_task_slot(user_id)
+                await plan_service.check_and_consume(
+                    user_id,
+                    "call_reminders",
+                    metadata={"source": "reminders_api_update", "task_id": reminder_id},
+                )
+                metadata["call_quota_reserved"] = True
+            metadata["notify_by_call"] = next_notify_by_call
+            if not next_notify_by_call:
+                metadata.pop("call_quota_reserved", None)
         if "call_phone" in request:
             from app.services.call_reminder_service import normalize_phone_number
 
@@ -263,6 +325,31 @@ async def execute_reminder(
     if not task:
         raise HTTPException(status_code=404, detail="Reminder not found")
 
+    current_status = str(task.get("status") or ("sent" if task.get("completed") else "pending"))
+    if current_status in {"sent", "missed_offline", "failed"}:
+        return {
+            "status": "already_handled",
+            "task": _task_to_reminder(task),
+            "action": {},
+        }
+
+    claim = await supabase_service.claim_pending_task(
+        reminder_id,
+        user_id=user_id,
+        status="calling",
+        completed=False,
+        execution_message="Task is being executed by AgentCoolie.",
+        last_attempt_at=datetime.now().astimezone().isoformat(),
+    )
+    if not claim:
+        latest = await supabase_service.get_task(reminder_id, user_id=user_id) or task
+        return {
+            "status": "already_handled",
+            "task": _task_to_reminder(latest),
+            "action": {},
+        }
+    task = claim
+
     task_type = task.get("type") or "general"
     message = task.get("description") or task.get("title") or ""
     execution_message = "Task completed by AgentCoolie."
@@ -270,6 +357,11 @@ async def execute_reminder(
     status_value = "sent"
 
     try:
+        await plan_service.check_and_consume(
+            user_id,
+            "task_executions",
+            metadata={"source": "reminders_execute", "task_type": task_type, "task_id": reminder_id},
+        )
         call_result = None
         existing_metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
         if call_reminder_service.task_wants_call(task) and existing_metadata.get("call_status") != "placed":
@@ -295,15 +387,7 @@ async def execute_reminder(
             action["call"] = call_result
 
         if task_type == "gmail":
-            tool_status = await n8n_service.gmail_status(user_id)
-            if not tool_status.get("configured"):
-                raise RuntimeError("Gmail automation is not configured on the backend.")
-            if not tool_status.get("connected"):
-                raise RuntimeError("Gmail is not connected. Connect Gmail in Settings first.")
-
-            result = await n8n_service.run_gmail_action(user_id, message)
-            if not result.get("ok"):
-                raise RuntimeError(str(result.get("message") or result.get("body") or "Gmail workflow failed."))
+            await execute_gmail_task(user_id, task)
             execution_message = (
                 f"{execution_message} Gmail task completed."
                 if call_result
@@ -367,15 +451,28 @@ async def execute_reminder(
 @router.post("/sse/connect")
 async def create_sse_connection(user_id: str = Depends(get_current_user)) -> dict:
     """Create a short-lived SSE connection id."""
+    _cleanup_sse_connect_ids()
+    user_ids = [
+        connect_id for connect_id, data in _sse_connect_ids.items()
+        if data.get("user_id") == user_id
+    ]
+    excess = max(0, len(user_ids) - SSE_MAX_IDS_PER_USER + 1)
+    for connect_id in user_ids[:excess]:
+        _sse_connect_ids.pop(connect_id, None)
     connect_id = str(uuid.uuid4())
-    _sse_connect_ids.add(connect_id)
+    _sse_connect_ids[connect_id] = {
+        "user_id": user_id,
+        "expires_at": time.time() + SSE_CONNECT_TTL_SECONDS,
+    }
     return {"connectId": connect_id}
 
 
 @router.get("/sse/stream/{connect_id}")
 async def stream_reminders(connect_id: str):
     """Keep the legacy SSE endpoint alive with heartbeat events."""
-    if connect_id not in _sse_connect_ids:
+    _cleanup_sse_connect_ids()
+    connection = _sse_connect_ids.get(connect_id)
+    if not connection:
         raise HTTPException(status_code=404, detail="SSE connection not found")
 
     async def event_stream():
@@ -385,6 +482,6 @@ async def stream_reminders(connect_id: str):
                 await asyncio.sleep(30)
                 yield f"event: ping\ndata: {json.dumps({'status': 'ok'})}\n\n"
         finally:
-            _sse_connect_ids.discard(connect_id)
+            _sse_connect_ids.pop(connect_id, None)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

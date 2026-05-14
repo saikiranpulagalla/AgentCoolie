@@ -14,7 +14,7 @@ from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import RedirectResponse
 
 from app.core.config import settings
-from app.services import firebase_service, supabase_service
+from app.services import firebase_service, plan_service, supabase_service
 from app.services.runtime_config_service import runtime_config_service
 
 logger = logging.getLogger(__name__)
@@ -79,8 +79,16 @@ async def _client_config() -> dict:
 
 
 def _state_signature(payload: str) -> str:
+    secret = settings.SESSION_SECRET_KEY
+    if settings.ENV != "development" and (
+        not secret or secret == "your-secret-key-change-in-production"
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="SESSION_SECRET_KEY must be set to a strong production secret before starting OAuth.",
+        )
     return hmac.new(
-        settings.SESSION_SECRET_KEY.encode("utf-8"),
+        secret.encode("utf-8"),
         payload.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
@@ -110,6 +118,18 @@ def _read_state(state: str) -> str:
     user_id = str(data.get("uid") or "").strip()
     if not user_id:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
+
+    try:
+        issued_at = datetime.fromisoformat(str(data.get("ts") or ""))
+        if issued_at.tzinfo is None:
+            issued_at = issued_at.replace(tzinfo=timezone.utc)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state") from e
+
+    max_age = max(60, int(settings.OAUTH_STATE_MAX_AGE_SECONDS or 600))
+    age_seconds = (datetime.now(timezone.utc) - issued_at.astimezone(timezone.utc)).total_seconds()
+    if age_seconds < -60 or age_seconds > max_age:
+        raise HTTPException(status_code=400, detail="OAuth state expired")
     return user_id
 
 
@@ -138,6 +158,7 @@ async def start_google_oauth(
     uid: Optional[str] = Query(default=None),
 ) -> dict[str, str]:
     user_id = _user_from_auth_or_dev_uid(authorization, uid)
+    await plan_service.ensure_feature_available(user_id, "gmail_sends")
 
     try:
         from google_auth_oauthlib.flow import Flow
@@ -175,6 +196,7 @@ async def google_oauth_callback(
         from google_auth_oauthlib.flow import Flow
 
         user_id = _read_state(state)
+        await plan_service.ensure_feature_available(user_id, "gmail_sends")
         flow = Flow.from_client_config(
             await _client_config(),
             scopes=GMAIL_SCOPES,

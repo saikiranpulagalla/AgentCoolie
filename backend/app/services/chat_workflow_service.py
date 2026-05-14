@@ -7,10 +7,13 @@ import logging
 import re
 from typing import Any
 
+from fastapi import HTTPException
+
 from app.agents import ChatAgent
 from app.core.config import settings
 from app.services.long_term_memory_service import long_term_memory_service
 from app.services.n8n_service import n8n_service
+from app.services.plan_service import plan_service
 from app.services.redis_memory_service import redis_memory_service
 from app.services.supabase_service import supabase_service
 from app.services.task_intent_service import _fallback_due_date, task_intent_service
@@ -24,6 +27,9 @@ def _looks_like_gmail_action(message: str) -> bool:
     text = message.lower()
     if task_intent_service._looks_like_task_request(message):
         return False
+    has_recipient_email = bool(_extract_email(message))
+    if has_recipient_email and any(word in text for word in ("send", "email", "mail", "reply", "letter")):
+        return True
     if not any(word in text for word in ("gmail", "email", "mail", "inbox", "letter")):
         return False
     return any(
@@ -237,6 +243,8 @@ class ChatWorkflowService:
         try:
             task = await task_intent_service.maybe_create_task_from_message(user_id, message)
             return task, None
+        except HTTPException:
+            raise
         except Exception as e:
             logger.warning(f"Could not create task from message for {user_id}: {e}")
             return None, str(e)
@@ -257,14 +265,26 @@ class ChatWorkflowService:
         except Exception as e:
             logger.debug(f"Could not save profile display name memory for {user_id}: {e}")
 
-    async def _save_chat_messages(self, user_id: str, message: str, response: str) -> dict[str, Any] | None:
+    async def _save_chat_messages(
+        self,
+        user_id: str,
+        message: str,
+        response: str,
+        conversation_id: str | None = None,
+    ) -> dict[str, Any] | None:
         try:
-            await supabase_service.create_message(user_id=user_id, content=message, role="user")
+            await supabase_service.create_message(
+                user_id=user_id,
+                content=message,
+                role="user",
+                conversation_id=conversation_id,
+            )
             return await supabase_service.create_message(
                 user_id=user_id,
                 content=response,
                 role="assistant",
                 model=settings.GEMINI_MODEL,
+                conversation_id=conversation_id,
             )
         except Exception as e:
             logger.warning(f"Could not persist chat messages for {user_id}: {e}")
@@ -328,6 +348,10 @@ class ChatWorkflowService:
             pending["payload"] = payload
 
         if _is_send_confirmation(text):
+            try:
+                await plan_service.ensure_feature_available(user_id, "gmail_sends")
+            except HTTPException as e:
+                return str(e.detail), "gmail", {"plan_limited": True}
             tool_status = await n8n_service.gmail_status(user_id)
             if not tool_status.get("configured"):
                 return "Gmail automation is not configured on the backend yet.", "gmail", tool_status
@@ -403,13 +427,23 @@ class ChatWorkflowService:
         save_messages: bool = True,
         conversation_id: str | None = None,
     ) -> dict[str, Any]:
+        plan = await plan_service.check_and_consume(
+            user_id,
+            "chat_messages",
+            metadata={"conversation_id": conversation_id},
+        )
         original_message = (message or "").strip()
         effective_message = _combine_message_with_attachments(original_message, attachment_context)
 
         chat_agent = ChatAgent(user_id=user_id)
         await self._remember_profile_name(user_id, user_name)
 
-        context = await redis_memory_service.get_recent_exchanges(user_id, conversation_id=conversation_id)
+        short_memory_turns = int(plan.get("caps", {}).get("short_memory_turns") or settings.REDIS_MEMORY_CONTEXT_EXCHANGES)
+        context = await redis_memory_service.get_recent_exchanges(
+            user_id,
+            limit=short_memory_turns,
+            conversation_id=conversation_id,
+        )
         long_term_memories = await long_term_memory_service.get_context(user_id)
         preferences = await self._get_preferences_for_prompt(user_id)
         preference_response, updated_preferences = await self._maybe_update_preferences(
@@ -429,6 +463,11 @@ class ChatWorkflowService:
         web_results: list[dict[str, Any]] = []
         web_search_attempted = web_search_service.should_search(original_message or effective_message)
         if web_search_attempted:
+            await plan_service.check_and_consume(
+                user_id,
+                "web_searches",
+                metadata={"source": "chat", "conversation_id": conversation_id},
+            )
             web_results = await web_search_service.search(original_message or effective_message, limit=5)
 
         document_state = await redis_memory_service.get_state(user_id, "document", conversation_id=conversation_id)
@@ -467,22 +506,29 @@ class ChatWorkflowService:
             response = pending_task_response
             tool_used = "tasks"
         elif _looks_like_gmail_action(original_message or effective_message):
-            tool_status = await n8n_service.gmail_status(user_id)
-            if not tool_status.get("configured"):
-                response = "Gmail automation is not configured on the backend yet."
-            elif not tool_status.get("connected"):
-                response = "Gmail is not connected. Go to Settings and connect Gmail first, then ask me again."
-            else:
-                gmail_tool_result = await n8n_service.run_gmail_action(user_id, original_message or effective_message)
+            try:
+                await plan_service.ensure_feature_available(user_id, "gmail_sends")
+            except HTTPException as e:
+                response = str(e.detail)
+                tool_status = {"plan_limited": True}
                 tool_used = "gmail"
-                if gmail_tool_result.get("ok"):
-                    response = _format_n8n_result(gmail_tool_result)
+            else:
+                tool_status = await n8n_service.gmail_status(user_id)
+                if not tool_status.get("configured"):
+                    response = "Gmail automation is not configured on the backend yet."
+                elif not tool_status.get("connected"):
+                    response = "Gmail is not connected. Go to Settings and connect Gmail first, then ask me again."
                 else:
-                    response = str(
-                        gmail_tool_result.get("message")
-                        or gmail_tool_result.get("body")
-                        or "The Gmail workflow is not ready yet."
-                    )
+                    gmail_tool_result = await n8n_service.run_gmail_action(user_id, original_message or effective_message)
+                    tool_used = "gmail"
+                    if gmail_tool_result.get("ok"):
+                        response = _format_n8n_result(gmail_tool_result)
+                    else:
+                        response = str(
+                            gmail_tool_result.get("message")
+                            or gmail_tool_result.get("body")
+                            or "The Gmail workflow is not ready yet."
+                        )
         else:
             response = await chat_agent.chat(
                 effective_message,
@@ -505,7 +551,12 @@ class ChatWorkflowService:
         await long_term_memory_service.maybe_save(user_id, original_message or effective_message, response)
         assistant_message = None
         if save_messages:
-            assistant_message = await self._save_chat_messages(user_id, original_message or effective_message, response)
+            assistant_message = await self._save_chat_messages(
+                user_id,
+                original_message or effective_message,
+                response,
+                conversation_id=conversation_id,
+            )
 
         return {
             "response": response,

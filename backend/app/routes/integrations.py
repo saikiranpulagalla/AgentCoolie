@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 
-from app.services import call_reminder_service, firebase_service, n8n_service, supabase_service
+from app.services import call_reminder_service, firebase_service, n8n_service, plan_service, supabase_service
 from app.services.call_reminder_service import normalize_phone_number
 from app.services.supabase_service import is_connectivity_error
 
@@ -128,6 +128,7 @@ async def save_whatsapp_phone(
         if not normalized:
             raise HTTPException(status_code=400, detail="WhatsApp phone must be in E.164 format, e.g. +919000000000")
 
+        await plan_service.ensure_feature_available(user_id, "whatsapp_messages")
         existing = await supabase_service.find_credential_by_phone(normalized, "whatsapp")
         if existing and existing.get("user_id") != user_id:
             raise HTTPException(status_code=409, detail="This WhatsApp number is already linked to another AgentCoolie account")
@@ -183,6 +184,7 @@ async def save_gmail_credentials(
         if not isinstance(credentials, dict):
             raise HTTPException(status_code=400, detail="credentials must be an object or null")
 
+        await plan_service.ensure_feature_available(user_id, "gmail_sends")
         await supabase_service.save_credentials(user_id, "gmail", credentials)
         return {"status": "success", "message": "Gmail credentials saved"}
     except HTTPException:

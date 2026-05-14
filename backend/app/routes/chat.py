@@ -10,9 +10,10 @@ from app.services import (
     chat_workflow_service,
     redis_memory_service,
     long_term_memory_service,
+    plan_service,
 )
 from app.core.config import settings
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import logging
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,10 @@ def get_current_user(authorization: str = Header(None)) -> str:
         
         # Verify with Firebase and extract user ID
         decoded = firebase_service.verify_id_token(token)
-        return decoded.get("uid")
+        user_id = decoded.get("uid")
+        if not user_id:
+            raise ValueError("Invalid token: missing uid")
+        return user_id
     except ValueError as e:
         raise HTTPException(status_code=401, detail=str(e))
 
@@ -71,6 +75,8 @@ async def send_message(
             "model": settings.GEMINI_MODEL,
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Chat message failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -119,6 +125,8 @@ async def append_conversation_memory(
 @router.get("/history", response_model=list[ChatMessageResponse])
 async def get_chat_history(
     limit: int = 50,
+    conversation_id: str | None = None,
+    conversationId: str | None = None,
     user_id: str = Depends(get_current_user),
 ) -> list[dict]:
     """
@@ -132,7 +140,15 @@ async def get_chat_history(
         List of chat messages
     """
     try:
-        messages = await supabase_service.get_messages(user_id, limit=limit)
+        plan = await plan_service.get_plan(user_id)
+        retention_days = int(plan.get("caps", {}).get("chat_history_days") or 7)
+        since = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        messages = await supabase_service.get_messages(
+            user_id,
+            limit=min(max(limit, 1), 100),
+            conversation_id=conversation_id or conversationId,
+            since_iso=since.isoformat(),
+        )
         return messages
     except Exception as e:
         logger.error(f"Failed to fetch chat history: {e}")

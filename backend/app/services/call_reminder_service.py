@@ -12,6 +12,7 @@ from typing import Any
 import requests
 
 from app.core.config import settings
+from app.services.plan_service import plan_service
 from app.services.runtime_config_service import runtime_config_service
 from app.services.supabase_service import supabase_service
 
@@ -178,6 +179,15 @@ class CallReminderService:
         to_number = await self.resolve_task_phone(task)
         if not to_number:
             raise RuntimeError("No call-reminder phone number is saved for this user.")
+
+        metadata = _task_metadata(task)
+        user_id = str(task.get("user_id") or "")
+        if user_id and not metadata.get("call_quota_reserved"):
+            await plan_service.check_and_consume(
+                user_id,
+                "call_reminders",
+                metadata={"source": "task_call", "task_id": task.get("id")},
+            )
 
         message = build_tenglish_call_message(task)
         twiml = (

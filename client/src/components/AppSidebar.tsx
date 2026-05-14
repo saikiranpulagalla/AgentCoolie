@@ -9,7 +9,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
-import { Home, MessageSquare, CheckSquare, Settings, Sparkles, LogOut, Bot, Info } from "lucide-react";
+import { Home, MessageSquare, CheckSquare, Settings, Sparkles, LogOut, Bot, Info, CreditCard } from "lucide-react";
 import { useLocation } from "wouter";
 import { useAuth } from "@/contexts/AuthContext";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -21,6 +21,7 @@ const menuItems = [
   { title: "Chat", url: "/chat", icon: MessageSquare, gradient: "from-chart-1/10 to-chart-2/10" },
   { title: "Tasks", url: "/tasks", icon: CheckSquare, gradient: "from-chart-3/10 to-chart-4/10" },
   { title: "About", url: "/about", icon: Info, gradient: "from-primary/10 to-chart-5/10" },
+  { title: "Upgrade", url: "/checkout", icon: CreditCard, gradient: "from-primary/15 to-chart-5/15" },
   { title: "Personalization", url: "/personalization", icon: Sparkles, gradient: "from-chart-2/10 to-primary/10" },
   { title: "Settings", url: "/settings", icon: Settings, gradient: "from-chart-4/10 to-chart-5/10" },
 ];

@@ -28,6 +28,7 @@ class FirebaseService:
         """Initialize Firebase Admin SDK."""
         if self._initialized:
             return
+        self._available = False
 
         try:
             if settings.FIREBASE_SERVICE_ACCOUNT_JSON and settings.FIREBASE_SERVICE_ACCOUNT_JSON != "{}":
@@ -44,11 +45,16 @@ class FirebaseService:
 
             firebase_admin.initialize_app(cred)
             logger.info("Firebase SDK initialized successfully")
+            self._available = True
             self._initialized = True
         except Exception as e:
             logger.warning(f"Firebase initialization failed: {e} - authentication will not work until configured")
             # Don't re-raise - allow app to start without Firebase
             self._initialized = True
+
+    def is_ready(self) -> bool:
+        """Return whether Firebase Admin is available for token verification."""
+        return bool(getattr(self, "_available", False))
 
     def verify_id_token(self, token: str) -> dict:
         """

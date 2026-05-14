@@ -1,5 +1,4 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
-import type { Task } from "@shared/schema";
 import { useAuth } from "@/contexts/AuthContext";
 import { apiFetch } from "@/lib/api";
 
@@ -21,10 +20,14 @@ const NotificationContext = createContext<NotificationContextType | undefined>(u
 
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
   const [notifications, setNotifications] = useState<Notification[]>([]);
-  const { getIdToken } = useAuth();
+  const { user, getIdToken } = useAuth();
 
   // load persisted notifications from server on mount
   useEffect(() => {
+    if (!user) {
+      setNotifications([]);
+      return;
+    }
     (async () => {
       try {
         const token = await getIdToken?.();
@@ -41,7 +44,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         // ignore
       }
     })();
-  }, [getIdToken]);
+  }, [user?.uid, getIdToken]);
 
   const addNotification = (n: Notification) => {
     setNotifications((prev) => [n, ...prev.filter((x) => x.id !== n.id)]);

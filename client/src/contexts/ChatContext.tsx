@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage } from "@shared/schema";
+import { apiFetch } from "@/lib/api";
 
 type Conversation = {
   id: string;
@@ -53,33 +54,6 @@ function loadFromStorageFor(uid?: string | null): Conversation[] {
   }
 }
 
-// Fallback loader: scan localStorage for any matching conversation keys and return the first non-empty
-function scanAnyStoredConversations(): Conversation[] {
-  try {
-    const keys: string[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && k.startsWith(STORAGE_PREFIX + ':')) keys.push(k);
-    }
-    // try keys in insertion order; prefer the last one set by iterating reverse
-    for (let i = keys.length - 1; i >= 0; i--) {
-      const raw = localStorage.getItem(keys[i]);
-      if (!raw) continue;
-      try {
-        const parsed = JSON.parse(raw) as Conversation[];
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed.map((c) => ({ ...c }));
-      } catch (e) {
-        // ignore parse errors and continue
-        continue;
-      }
-    }
-    return [];
-  } catch (e) {
-    console.warn('Failed to scan localStorage for conversations', e);
-    return [];
-  }
-}
-
 function saveToStorageFor(uid: string | null | undefined, conversations: Conversation[]) {
   try {
     localStorage.setItem(storageKeyFor(uid), JSON.stringify(conversations));
@@ -99,7 +73,9 @@ export function ChatProvider({
   // start empty; we'll load from storage after auth state is known to avoid guest/uid race
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
+  const [loadedStorageOwner, setLoadedStorageOwner] = useState<string | null>(null);
   const currentConversationIdRef = useRef<string | null>(null);
+  const activeChatLimitRef = useRef<number>(5);
 
   const [isTyping, setIsTyping] = useState(false);
 
@@ -107,31 +83,63 @@ export function ChatProvider({
     currentConversationIdRef.current = currentConversationId;
   }, [currentConversationId]);
 
+  useEffect(() => {
+    if (!userId) {
+      activeChatLimitRef.current = 5;
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await apiFetch("/api/billing/plan");
+        if (!response.ok) return;
+        const body = await response.json().catch(() => ({}));
+        const limit = Number(body?.plan?.caps?.active_chats || 5);
+        if (!cancelled && Number.isFinite(limit) && limit > 0) {
+          activeChatLimitRef.current = limit;
+          localStorage.setItem(`agentcoolie:active-chat-limit:${userId}`, String(limit));
+        }
+      } catch (e) {
+        try {
+          const cached = Number(localStorage.getItem(`agentcoolie:active-chat-limit:${userId}`) || "5");
+          activeChatLimitRef.current = Number.isFinite(cached) && cached > 0 ? cached : 5;
+        } catch {
+          activeChatLimitRef.current = 5;
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const summary = (event as CustomEvent<any>).detail;
+      const limit = Number(summary?.plan?.caps?.active_chats || 0);
+      if (Number.isFinite(limit) && limit > 0) {
+        activeChatLimitRef.current = limit;
+        if (userId) {
+          localStorage.setItem(`agentcoolie:active-chat-limit:${userId}`, String(limit));
+        }
+      }
+    };
+    window.addEventListener("agentcoolie:plan-updated", handler);
+    return () => window.removeEventListener("agentcoolie:plan-updated", handler);
+  }, [userId]);
+
   // Load conversations for the current user when user changes (or on mount for guest)
   useEffect(() => {
     try {
-      // If a user just logged in, migrate any guest conversations to this user's key
-      if (userId) {
-        try {
-          const userKey = `${STORAGE_PREFIX}:${userId}`;
-          const guestKey = `${STORAGE_PREFIX}:guest`;
-          const hasUser = localStorage.getItem(userKey);
-          const hasGuest = localStorage.getItem(guestKey);
-          if (!hasUser && hasGuest) {
-            localStorage.setItem(userKey, hasGuest);
-            localStorage.removeItem(guestKey);
-          }
-        } catch (e) {
-          // ignore storage errors
-        }
-      }
-
+      const owner = userId ?? "guest";
+      setLoadedStorageOwner(null);
       const loaded = loadFromStorageFor(userId ?? null);
       console.debug('ChatProvider: initializing conversations for user', userId ?? 'none', 'loadedCount', loaded.length);
       setConversations(loaded);
       const nextCurrent = loaded.length ? loaded[loaded.length - 1].id : null;
       currentConversationIdRef.current = nextCurrent;
       setCurrentConversationId(nextCurrent);
+      setLoadedStorageOwner(owner);
     } catch (e) {
       console.warn('Failed to initialize conversations from storage', e);
     }
@@ -140,10 +148,20 @@ export function ChatProvider({
 
   // persist when conversations or user changes
   useEffect(() => {
+    const owner = userId ?? "guest";
+    if (loadedStorageOwner !== owner) return;
     saveToStorageFor(userId ?? null, conversations);
-  }, [conversations, userId]);
+  }, [conversations, userId, loadedStorageOwner]);
 
   const newConversation = (title?: string) => {
+    const limit = activeChatLimitRef.current || 5;
+    if (conversations.length >= limit) {
+      const fallbackId = currentConversationIdRef.current || conversations[conversations.length - 1]?.id || "";
+      window.dispatchEvent(new CustomEvent("agentcoolie:plan-limit", {
+        detail: `Your current AgentCoolie plan allows ${limit} active chats. Delete an old chat or upgrade to Autopilot.`,
+      }));
+      return fallbackId;
+    }
     const id = (typeof crypto !== 'undefined' && (crypto as any).randomUUID ? (crypto as any).randomUUID() : `${Date.now()}`);
     const now = new Date().toISOString();
     const conv: Conversation = { id, title: title ?? "New chat", messages: [], createdAt: now, updatedAt: now };

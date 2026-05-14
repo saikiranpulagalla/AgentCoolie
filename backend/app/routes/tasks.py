@@ -4,7 +4,7 @@ Task management routes.
 
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from app.models import Task, TaskCreate, TaskUpdate
-from app.services import supabase_service, firebase_service
+from app.services import supabase_service, firebase_service, plan_service
 from app.services.supabase_service import is_connectivity_error
 from app.agents import TaskAgent
 import logging
@@ -27,7 +27,10 @@ def get_current_user(authorization: str = Header(None)) -> str:
         
         # Verify with Firebase and extract user ID
         decoded = firebase_service.verify_id_token(token)
-        return decoded.get("uid")
+        user_id = decoded.get("uid")
+        if not user_id:
+            raise ValueError("Invalid token: missing uid")
+        return user_id
     except ValueError as e:
         raise HTTPException(status_code=401, detail=str(e))
 
@@ -48,6 +51,18 @@ async def create_task(
         Created task
     """
     try:
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token: missing uid")
+        await plan_service.ensure_active_task_slot(user_id)
+        if task_request.type.value == "gmail":
+            await plan_service.ensure_feature_available(user_id, "gmail_sends")
+        if task_request.type.value == "whatsapp":
+            await plan_service.ensure_feature_available(user_id, "whatsapp_messages")
+        await plan_service.check_and_consume(
+            user_id,
+            "task_creations",
+            metadata={"source": "tasks_api", "task_type": task_request.type.value},
+        )
         task = await supabase_service.create_task(
             user_id=user_id,
             title=task_request.title,
@@ -57,6 +72,8 @@ async def create_task(
             due_date=task_request.due_date.isoformat() if task_request.due_date else None,
         )
         return task
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to create task: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -78,6 +95,8 @@ async def create_task_from_text(
         Created task details
     """
     try:
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token: missing uid")
         agent = TaskAgent(user_id)
         text = request.get("text", "")
 
@@ -87,6 +106,16 @@ async def create_task_from_text(
         # Save task to database
         if task_details.get("status") == "success":
             task_data = task_details.get("task", {})
+            await plan_service.ensure_active_task_slot(user_id)
+            if task_data.get("type") == "gmail":
+                await plan_service.ensure_feature_available(user_id, "gmail_sends")
+            if task_data.get("type") == "whatsapp":
+                await plan_service.ensure_feature_available(user_id, "whatsapp_messages")
+            await plan_service.check_and_consume(
+                user_id,
+                "task_creations",
+                metadata={"source": "tasks_from_text", "task_type": task_data.get("type", "general")},
+            )
             saved_task = await supabase_service.create_task(
                 user_id=user_id,
                 title=task_data.get("title", "Untitled"),
@@ -98,6 +127,8 @@ async def create_task_from_text(
             return saved_task
 
         return {"status": "error", "error": "Failed to extract task details"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to create task from text: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -167,6 +198,10 @@ async def update_task(
         update_data = task_update.dict(exclude_unset=True)
         if "type" in update_data:
             update_data["type"] = update_data["type"].value
+            if update_data["type"] == "gmail":
+                await plan_service.ensure_feature_available(user_id, "gmail_sends")
+            if update_data["type"] == "whatsapp":
+                await plan_service.ensure_feature_available(user_id, "whatsapp_messages")
         if "priority" in update_data:
             update_data["priority"] = update_data["priority"].value
         if "due_date" in update_data and update_data["due_date"]:

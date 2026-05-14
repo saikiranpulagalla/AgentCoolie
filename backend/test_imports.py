@@ -3,6 +3,9 @@
 import sys
 import os
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 # Add app to path
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -47,7 +50,7 @@ def test_all_routes_import():
         from app.routes.chat import router as chat_router
         from app.routes.tasks import router as tasks_router
         from app.routes.whatsapp import router as whatsapp_router
-        from app.routes.gmail import router as gmail_router
+        from app.routes.billing import router as billing_router
         print("✅ TEST 4 PASSED: All routes import successfully")
         return True
     except Exception as e:

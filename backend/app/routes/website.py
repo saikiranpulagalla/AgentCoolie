@@ -2,13 +2,31 @@
 Website opening routes for handling user requests to open websites.
 """
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel
 from typing import Optional
 import logging
 
+from app.services import firebase_service, plan_service
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["website"])
+
+
+def get_current_user(authorization: str = Header(None)) -> str:
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing authorization header")
+    try:
+        parts = authorization.split(" ")
+        if len(parts) != 2 or parts[0].lower() != "bearer":
+            raise ValueError("Invalid authorization header format")
+        decoded = firebase_service.verify_id_token(parts[1])
+        user_id = decoded.get("uid")
+        if not user_id:
+            raise ValueError("Invalid token: missing uid")
+        return user_id
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
 
 
 class WebsiteRequest(BaseModel):
@@ -25,7 +43,10 @@ class WebsiteResponse(BaseModel):
 
 
 @router.post("/website/open", response_model=WebsiteResponse)
-async def open_website(request: WebsiteRequest) -> dict:
+async def open_website(
+    request: WebsiteRequest,
+    user_id: str = Depends(get_current_user),
+) -> dict:
     """
     Handle website opening requests.
     
@@ -48,6 +69,12 @@ async def open_website(request: WebsiteRequest) -> dict:
                 "opened": False,
                 "opened_in_system_browser": False
             }
+
+        await plan_service.check_and_consume(
+            user_id,
+            "website_opens",
+            metadata={"source": "website_api"},
+        )
         
         # Simple URL extraction - look for URLs in the query
         import re
@@ -111,6 +138,8 @@ async def open_website(request: WebsiteRequest) -> dict:
             "opened_in_system_browser": False
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Website opening error: {e}")
         raise HTTPException(

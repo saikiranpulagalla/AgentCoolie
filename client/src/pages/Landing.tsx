@@ -7,9 +7,9 @@ import {
   CalendarClock,
   CheckCircle2,
   Clock,
+  CreditCard,
   FileText,
   Globe,
-  Lock,
   MessageSquare,
   Play,
   Search,
@@ -55,6 +55,41 @@ const previewSteps = [
   "Searches current news when needed",
   "Schedules the follow-up task",
   "Responds with clear next steps",
+];
+
+const plans = [
+  {
+    name: "AgentCoolie Companion",
+    price: "Free",
+    description: "For trying the personal agent with light daily usage.",
+    features: [
+      "150 chat messages/month",
+      "25 web searches/month",
+      "5 active tasks",
+      "15 long-term memories",
+      "1 call reminder/month",
+      "Gmail and WhatsApp not included",
+    ],
+    cta: "Start Free",
+    href: "/login",
+    accent: false,
+  },
+  {
+    name: "AgentCoolie Autopilot",
+    price: "Rs. 499/month",
+    description: "For deeper memory, more automation, Gmail, WhatsApp, calls, and larger files.",
+    features: [
+      "1,000 chat messages/month",
+      "250 web searches/month",
+      "75 active tasks",
+      "200 long-term memories",
+      "10 call reminders/month",
+      "Gmail + WhatsApp automation",
+    ],
+    cta: "Upgrade to Autopilot",
+    href: "/checkout",
+    accent: true,
+  },
 ];
 
 function AgentPreview() {
@@ -148,6 +183,7 @@ export default function Landing() {
           <nav className="hidden items-center gap-6 text-sm text-white/78 md:flex">
             <a href="#features" className="transition-colors hover:text-white">Features</a>
             <a href="#workflow" className="transition-colors hover:text-white">Workflow</a>
+            <a href="#pricing" className="transition-colors hover:text-white">Pricing</a>
             <a href="#about" className="transition-colors hover:text-white">About</a>
           </nav>
 
@@ -201,6 +237,12 @@ export default function Landing() {
                   See What It Can Do
                 </Button>
               </a>
+              <Link href="/checkout">
+                <Button size="lg" variant="outline" className="gap-2 border-white/30 bg-white/10 text-white hover:bg-white/18">
+                  View Pro
+                  <CreditCard className="h-4 w-4" />
+                </Button>
+              </Link>
             </div>
           </div>
 
@@ -257,6 +299,53 @@ export default function Landing() {
               </div>
             ))}
           </div>
+        </div>
+      </section>
+
+      <section id="pricing" className="mx-auto max-w-7xl px-5 py-16">
+        <div className="mb-8 max-w-3xl space-y-3">
+          <p className="text-sm font-semibold text-primary">Plans</p>
+          <h2 className="text-4xl font-bold">Start free. Turn on Autopilot when you want the agent to do more.</h2>
+          <p className="leading-7 text-muted-foreground">
+            Companion is useful for light personal assistance. Autopilot unlocks higher limits for memory, live search, tasks, Gmail, WhatsApp, file analysis, and call reminders.
+          </p>
+        </div>
+
+        <div className="grid gap-5 lg:grid-cols-2">
+          {plans.map((plan) => (
+            <Card
+              key={plan.name}
+              className={`relative overflow-hidden p-7 ${plan.accent ? "border-primary shadow-xl shadow-primary/10" : ""}`}
+            >
+              {plan.accent && <div className="absolute inset-x-0 top-0 h-1.5 bg-primary" />}
+              <div className="mb-6 flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-sm font-semibold text-primary">{plan.name}</p>
+                  <h3 className="mt-2 text-4xl font-bold">{plan.price}</h3>
+                  {plan.accent && <p className="mt-1 text-sm text-muted-foreground">$6/month outside India</p>}
+                </div>
+                {plan.accent && (
+                  <span className="rounded-full bg-primary/10 px-3 py-1 text-sm font-semibold text-primary">
+                    Pro mode
+                  </span>
+                )}
+              </div>
+              <p className="mb-6 leading-7 text-muted-foreground">{plan.description}</p>
+              <div className="mb-7 grid gap-3">
+                {plan.features.map((feature) => (
+                  <div key={feature} className="flex items-center gap-3">
+                    <CheckCircle2 className="h-5 w-5 text-primary" />
+                    <span className="text-sm">{feature}</span>
+                  </div>
+                ))}
+              </div>
+              <Link href={plan.href}>
+                <Button className={plan.accent ? "w-full bg-primary text-primary-foreground hover:bg-primary/90" : "w-full"} variant={plan.accent ? "default" : "outline"}>
+                  {plan.cta}
+                </Button>
+              </Link>
+            </Card>
+          ))}
         </div>
       </section>
 

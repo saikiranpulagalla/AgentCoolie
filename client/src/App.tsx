@@ -22,6 +22,7 @@ import Personalization from "@/pages/Personalization";
 import Settings from "@/pages/Settings";
 import Website from "@/pages/Website";
 import About from "@/pages/About";
+import Checkout from "@/pages/Checkout";
 import NotFound from "@/pages/not-found";
 
 function ProtectedRoute({ component: Component }: { component: React.ComponentType }) {
@@ -70,6 +71,9 @@ function Router() {
       </Route>
       <Route path="/about">
         <ProtectedRoute component={About} />
+      </Route>
+      <Route path="/checkout">
+        <Checkout />
       </Route>
       <Route component={NotFound} />
     </Switch>
@@ -127,10 +131,14 @@ function AppContent() {
 
 
 function AuthenticatedAppProviders() {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
+
+  if (loading || !user) {
+    return <AppContent />;
+  }
 
   return (
-    <ChatProvider userId={user?.uid ?? null}>
+    <ChatProvider userId={user.uid}>
       <AppContent />
     </ChatProvider>
   );

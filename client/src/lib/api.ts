@@ -23,7 +23,11 @@ export async function apiFetch(inputPath: string, init?: RequestInit): Promise<R
 
   // Add Firebase auth token if available
   const headers = new Headers(init?.headers || {});
-  headers.set("Content-Type", "application/json");
+  const body = init?.body;
+  const isFormData = typeof FormData !== "undefined" && body instanceof FormData;
+  if (!headers.has("Content-Type") && !isFormData) {
+    headers.set("Content-Type", "application/json");
+  }
 
   try {
     const auth = getFirebaseAuth();
@@ -146,27 +150,38 @@ export async function sendWhatsappMessage(to: string, message: string) {
   return response.json();
 }
 
-// ============ Gmail ============
+export async function authorizeGmail() {
+  const response = await apiFetch("/api/oauth/google/start");
+  if (!response.ok) throw new Error(`API error: ${response.statusText}`);
+  return response.json();
+}
 
-export async function processEmail(emailData: {
-  email_id: string;
-  subject: string;
-  body: string;
-  from: string;
-}) {
-  const response = await apiFetch("/api/gmail/process-email", {
+export async function runGmailAction(message: string, action?: string, payload?: Record<string, any>) {
+  const response = await apiFetch("/api/external/gmail-action", {
     method: "POST",
-    body: JSON.stringify(emailData),
+    body: JSON.stringify({ message, action, payload }),
   });
   if (!response.ok) throw new Error(`API error: ${response.statusText}`);
   return response.json();
 }
 
-export async function authorizeGmail() {
-  const response = await apiFetch("/api/gmail/oauth/authorize", {
-    method: "POST",
-  });
+// ============ Billing ============
+
+export async function getBillingPlan() {
+  const response = await apiFetch("/api/billing/plan");
   if (!response.ok) throw new Error(`API error: ${response.statusText}`);
+  return response.json();
+}
+
+export async function activateDemoAutopilot() {
+  const response = await apiFetch("/api/billing/demo-upgrade", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body?.detail || `API error: ${response.statusText}`);
+  }
   return response.json();
 }
 

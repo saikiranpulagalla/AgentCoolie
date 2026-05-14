@@ -45,6 +45,9 @@ create index if not exists tasks_user_id_idx
 create index if not exists tasks_user_status_due_idx
   on public.tasks (user_id, status, due_date);
 
+create index if not exists tasks_status_due_idx
+  on public.tasks (status, due_date);
+
 alter table public.tasks enable row level security;
 
 drop policy if exists "Users can read own tasks" on public.tasks;

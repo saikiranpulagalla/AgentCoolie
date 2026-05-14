@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
-from app.services import firebase_service, web_search_service
+from app.services import firebase_service, plan_service, web_search_service
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 
@@ -40,5 +40,10 @@ async def web_search(
         raise HTTPException(status_code=400, detail="Query is required")
 
     limit = min(max(request.limit, 1), 10)
+    await plan_service.check_and_consume(
+        user_id,
+        "web_searches",
+        metadata={"source": "search_api", "limit": limit},
+    )
     results = await web_search_service.search(query, limit=limit)
     return {"status": "success", "query": query, "results": results}

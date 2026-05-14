@@ -15,20 +15,7 @@ export default function Personalization() {
   const { toast } = useToast();
   
   const { user, getIdToken } = useAuth();
-  const [userId, setUserId] = useState<string | null>(() => {
-    try {
-      return localStorage.getItem('userId');
-    } catch (e) {
-      return null;
-    }
-  });
-
-  useEffect(() => {
-    if (user) {
-      setUserId(user.uid as string);
-      try { localStorage.setItem('userId', user.uid); } catch {}
-    }
-  }, [user]);
+  const userId = user?.uid ?? null;
 
   const [settings, setSettings] = useState<PersonalizationSettings>({
     tone: "friendly",
@@ -54,6 +41,13 @@ export default function Personalization() {
       } catch (e) {
         console.warn('Failed to read cached personalization settings:', e);
       }
+    } else {
+      setSettings({
+        tone: "friendly",
+        responseLength: "moderate",
+        formality: "medium",
+        includeEmojis: false,
+      });
     }
 
     const handler = (event: Event) => {
@@ -111,6 +105,10 @@ export default function Personalization() {
         console.error('Save failed', payload);
         return toast({ title: 'Save failed', description: payload?.message || 'Could not save preferences.' });
       }
+      try {
+        localStorage.setItem(`agentcoolie:preferences:${userId}`, JSON.stringify(settings));
+        window.dispatchEvent(new CustomEvent('agentcoolie:preferences-updated', { detail: settings }));
+      } catch {}
       toast({ title: 'Settings saved', description: 'Your personalization preferences have been updated.' });
     } catch (err) {
       console.error(err);

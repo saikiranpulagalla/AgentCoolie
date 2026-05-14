@@ -39,6 +39,15 @@ export default function Chat() {
     scrollToBottom();
   }, [messages, isTyping]);
 
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<string>).detail;
+      if (detail) setError(detail);
+    };
+    window.addEventListener("agentcoolie:plan-limit", handler);
+    return () => window.removeEventListener("agentcoolie:plan-limit", handler);
+  }, []);
+
   const deleteConversationMemory = async (conversationId: string) => {
     try {
       await apiFetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/memory`, {
@@ -133,6 +142,19 @@ export default function Chat() {
       return "unknown";
     };
 
+    const readResponseError = async (response: Response) => {
+      try {
+        const body = await response.json();
+        return body?.detail || body?.message || body?.error || JSON.stringify(body);
+      } catch (e) {
+        try {
+          return await response.text();
+        } catch {
+          return response.statusText || "Request failed";
+        }
+      }
+    };
+
     const youtubeSearchUrl = (() => {
       const cleaned = messageText
         .replace(/\b(can|could|would)\s+u\b/gi, '')
@@ -152,7 +174,7 @@ export default function Chat() {
         const openTarget = openUrlInNewTab(lastYoutubeForChat.url);
         const assistantContent = openTarget === "new-tab"
           ? `Opening ${lastYoutubeForChat.title || "the last YouTube result"} now.`
-          : `I tried to open ${lastYoutubeForChat.title || "the last YouTube result"}. If it did not appear, open it here:\n\n${lastYoutubeForChat.url}`;
+          : `I opened or attempted to open ${lastYoutubeForChat.title || "the last YouTube result"}. If it did not appear, open it here:\n\n${lastYoutubeForChat.url}`;
         addMessage({
           id: Date.now().toString(),
           content: messageText,
@@ -176,13 +198,36 @@ export default function Chat() {
           method: 'POST',
           body: JSON.stringify({ query: messageText }),
         });
+
+        if (!resp.ok) {
+          const detail = await readResponseError(resp);
+          if ([402, 413, 429].includes(resp.status)) {
+            const assistantContent = detail || "This action is not available on your current AgentCoolie plan.";
+            addMessage({
+              id: Date.now().toString(),
+              content: messageText,
+              role: "user" as const,
+              timestamp: new Date(),
+              attachments,
+            }, targetConversationId);
+            addMessage({
+              id: (Date.now() + 1).toString(),
+              content: assistantContent,
+              role: "assistant" as const,
+              timestamp: new Date(),
+            }, targetConversationId);
+            void recordConversationExchange(targetConversationId, messageText, assistantContent);
+            setIsTyping(false);
+            return;
+          }
+        }
         
         if (resp.ok) {
           const json = await resp.json();
 
           // If it's a video request with high confidence, handle it
           if (json?.status === 'success' && json.isVideoRequest && json.confidence > 0.7 && json.video?.url) {
-            const { video, searchQuery } = json;
+            const { video } = json;
             lastYoutubeByConversationRef.current[targetConversationId] = {
               url: video.url,
               title: video.title,
@@ -203,7 +248,7 @@ export default function Chat() {
               id: (Date.now() + 1).toString(),
               content: openTarget === "new-tab"
                 ? `I found a video that matches your request.\n\nTitle: ${video.title}\nChannel: ${video.channel}\n\nI've opened it in a new tab for you.`
-                : `I found a video that matches your request.\n\nTitle: ${video.title}\nChannel: ${video.channel}\n\nI tried to open it in a new tab. If it did not appear, open it here:\n\n${video.url}`,
+                : `I found a video that matches your request.\n\nTitle: ${video.title}\nChannel: ${video.channel}\n\nI opened or attempted to open it in a new tab. If it did not appear, open it here:\n\n${video.url}`,
               role: 'assistant' as const,
               timestamp: new Date(),
             };
@@ -218,7 +263,7 @@ export default function Chat() {
           const openTarget = openUrlInNewTab(youtubeSearchUrl);
           const assistantContent = openTarget === "new-tab"
             ? `I opened YouTube search results for your request.\n\n${youtubeSearchUrl}`
-            : `I tried to open YouTube search results. If they did not appear, open them here:\n\n${youtubeSearchUrl}`;
+            : `I opened or attempted to open YouTube search results. If they did not appear, open them here:\n\n${youtubeSearchUrl}`;
           addMessage({
             id: Date.now().toString(),
             content: messageText,
@@ -313,7 +358,6 @@ export default function Chat() {
           'open',
           'go to',
           'visit',
-          'show me',
           'navigate to',
           'launch',
           'open website',
@@ -336,6 +380,21 @@ export default function Chat() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query: messageText }),
           });
+          if (!siteResp.ok) {
+            const detail = await readResponseError(siteResp);
+            if ([402, 413, 429].includes(siteResp.status)) {
+              const assistantMsg = {
+                id: (Date.now() + 1).toString(),
+                content: detail || "This action is not available on your current AgentCoolie plan.",
+                role: 'assistant' as const,
+                timestamp: new Date(),
+              };
+              addMessage(assistantMsg, targetConversationId);
+              void recordConversationExchange(targetConversationId, messageText, assistantMsg.content);
+              setIsTyping(false);
+              return;
+            }
+          }
           if (siteResp.ok) {
             const siteJson = await siteResp.json();
             // If we get any indication of success from the website endpoint, don't forward to webhook
@@ -363,7 +422,7 @@ export default function Chat() {
                     siteJson?.data?.description 
                       ? `Description: ${siteJson.data.description}\n` 
                       : ''
-                  }\n${openTarget === "new-tab" ? "I've opened it in a new tab for you." : "I tried to open it in a new tab. If it did not appear, open it here:"} ${siteJson.final_url}`,
+                  }\n${openTarget === "new-tab" ? "I've opened it in a new tab for you." : "I opened or attempted to open it in a new tab. If it did not appear, open it here:"} ${siteJson.final_url}`,
                   role: 'assistant' as const,
                   timestamp: new Date(),
                 };
@@ -475,7 +534,7 @@ export default function Chat() {
             let errorBody: string | undefined;
             try {
               const json = await response!.json();
-              errorBody = JSON.stringify(json);
+              errorBody = json?.detail || json?.message || json?.error || JSON.stringify(json);
             } catch (e) {
               try {
                 errorBody = await response!.text();
@@ -483,8 +542,7 @@ export default function Chat() {
                 errorBody = undefined;
               }
             }
-            const message = `HTTP error! status: ${response!.status}${errorBody ? ` - ${errorBody}` : ""}`;
-            throw new Error(message);
+            throw new Error(errorBody || `Request failed with status ${response!.status}`);
           }
 
           // Try to read response as text first, then parse JSON if possible.
@@ -682,7 +740,10 @@ export default function Chat() {
       }
     } catch (err) {
       console.error("Error sending message:", err);
-      const friendly = "Server unreachable - please check your connection and try again.";
+      const rawMessage = err instanceof Error ? err.message : String(err || "");
+      const friendly = rawMessage && rawMessage !== "Failed to fetch"
+        ? rawMessage
+        : "Server unreachable - please check your connection and try again.";
       setError(friendly);
 
       const errorMessage = {

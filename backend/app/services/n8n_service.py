@@ -9,6 +9,7 @@ from typing import Any
 import aiohttp
 
 from app.core.config import settings
+from app.services.plan_service import plan_service
 from app.services.runtime_config_service import runtime_config_service
 from app.services.supabase_service import supabase_service
 
@@ -168,6 +169,17 @@ class N8NService:
                     "status": 400,
                     "message": planner_message or "Please specify a Gmail action.",
                 }
+
+        feature = "gmail_reads"
+        if action in {"send", "reply", "delete"}:
+            feature = "gmail_sends"
+        elif action == "draft":
+            feature = "gmail_drafts"
+        await plan_service.check_and_consume(
+            user_id,
+            feature,
+            metadata={"source": "n8n_gmail", "action": action},
+        )
 
         result = await self._post(
             "N8N_GMAIL_ACTION_PATH",

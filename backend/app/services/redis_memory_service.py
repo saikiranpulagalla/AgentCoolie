@@ -22,7 +22,7 @@ class RedisMemoryService:
         self.redis_url = settings.REDIS_URL
         self.ttl_seconds = settings.REDIS_MEMORY_TTL_SECONDS
         self.context_exchanges = settings.REDIS_MEMORY_CONTEXT_EXCHANGES
-        self.max_messages = max(settings.REDIS_MEMORY_MAX_MESSAGES, self.context_exchanges * 2)
+        self.max_messages = max(settings.REDIS_MEMORY_MAX_MESSAGES, self.context_exchanges * 2, 30)
         self._client: Any = None
         self._disabled = False
 
@@ -49,10 +49,10 @@ class RedisMemoryService:
             return self._client
         except ImportError:
             logger.warning("Redis package is not installed; short memory is disabled")
+            self._disabled = True
         except Exception as e:
             logger.warning(f"Redis short memory unavailable; continuing without it: {e}")
 
-        self._disabled = True
         return None
 
     def _scope(self, conversation_id: str | None = None) -> str:

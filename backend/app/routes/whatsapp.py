@@ -5,10 +5,11 @@ WhatsApp integration routes.
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
 from fastapi.responses import Response
 from app.models import WhatsappWebhookRequest
-from app.services import chat_workflow_service, supabase_service, firebase_service
+from app.services import chat_workflow_service, supabase_service, firebase_service, plan_service
 from app.services.call_reminder_service import normalize_phone_number
 from app.services.runtime_config_service import runtime_config_service
 from app.core.config import settings
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -36,7 +37,10 @@ def get_current_user(authorization: str = Header(None)) -> str:
         
         # Verify with Firebase and extract user ID
         decoded = firebase_service.verify_id_token(token)
-        return decoded.get("uid")
+        user_id = decoded.get("uid")
+        if not user_id:
+            raise ValueError("Invalid token: missing uid")
+        return user_id
     except ValueError as e:
         raise HTTPException(status_code=401, detail=str(e))
 
@@ -118,6 +122,15 @@ async def handle_twilio_whatsapp_webhook(request: Request) -> Response:
                 "Open AgentCoolie Settings, copy the code, and send LINK followed by that code here."
             )
 
+        try:
+            await plan_service.check_and_consume(
+                user_id,
+                "whatsapp_messages",
+                metadata={"source": "twilio_inbound"},
+            )
+        except HTTPException as e:
+            return _twiml_message(str(e.detail))
+
         result = await chat_workflow_service.process(
             user_id=user_id,
             message=message,
@@ -188,6 +201,16 @@ async def handle_webhook(
                     continue
 
                 user_id = str(credential.get("user_id") or "")
+                try:
+                    await plan_service.check_and_consume(
+                        user_id,
+                        "whatsapp_messages",
+                        metadata={"source": "generic_webhook"},
+                    )
+                except HTTPException as e:
+                    logger.warning(f"WhatsApp usage limit reached for {user_id}: {e.detail}")
+                    continue
+
                 result = await chat_workflow_service.process(
                     user_id=user_id,
                     message=message_text,
@@ -264,16 +287,25 @@ async def send_whatsapp_message(
         if not normalized_to:
             raise HTTPException(status_code=400, detail="Invalid WhatsApp phone number")
 
-        response = requests.post(
-            f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json",
-            data={
-                "To": f"whatsapp:{normalized_to}",
-                "From": whatsapp_from,
-                "Body": str(message)[:1500],
-            },
-            auth=(account_sid, auth_token),
-            timeout=30,
+        await plan_service.check_and_consume(
+            user_id,
+            "whatsapp_messages",
+            metadata={"source": "whatsapp_send", "to": normalized_to},
         )
+
+        def _send() -> requests.Response:
+            return requests.post(
+                f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json",
+                data={
+                    "To": f"whatsapp:{normalized_to}",
+                    "From": whatsapp_from,
+                    "Body": str(message)[:1500],
+                },
+                auth=(account_sid, auth_token),
+                timeout=30,
+            )
+
+        response = await asyncio.to_thread(_send)
         if response.status_code >= 400:
             raise RuntimeError(f"Twilio WhatsApp send failed ({response.status_code}): {response.text[:300]}")
         twilio_payload = response.json()
@@ -294,6 +326,8 @@ async def send_whatsapp_message(
             "sid": twilio_payload.get("sid"),
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to send WhatsApp message: {e}")
         raise HTTPException(status_code=500, detail=str(e))
