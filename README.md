@@ -2,7 +2,7 @@
 
 AgentCoolie is a personal AI agent application with authenticated chat, short-term Redis memory, long-term Supabase memory, task automation, Gmail tooling through n8n, web search, PDF/image/audio handling, WhatsApp access, and phone-call reminders for important tasks.
 
-This repository contains the production frontend, backend API, SQL schema files, and isolated Twilio call test tooling. The prompt inspector is maintained as a separate debug companion repository: `https://github.com/Saikirankmit/prompt-inspector`.
+This repository contains the production frontend, backend API, SQL schema files, and deployment/startup configuration. The prompt inspector is maintained as a separate debug companion repository: `https://github.com/Saikirankmit/prompt-inspector`.
 
 ## What AgentCoolie Does
 
@@ -30,8 +30,6 @@ This repository contains the production frontend, backend API, SQL schema files,
 |   `-- sql/                 Supabase schema and migration SQL
 |-- client/                  React app source is under client/src
 |-- shared/                  Shared TypeScript schema definitions
-|-- call-reminder-test/      Isolated Twilio call test harness
-|-- docs/                    Additional operations/security notes
 |-- package.json             Frontend build/dev scripts
 |-- vite.config.ts           Vite config and local backend proxy
 `-- firebase.json            Firebase Hosting config
