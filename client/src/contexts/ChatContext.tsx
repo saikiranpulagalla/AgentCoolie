@@ -222,12 +222,26 @@ export function ChatProvider({
       let idx = prev.findIndex((c) => c.id === targetConversationId);
       // if no current conversation, create one
       if (idx === -1) {
-        const id = targetConversationId || (typeof crypto !== 'undefined' && (crypto as any).randomUUID ? (crypto as any).randomUUID() : `${Date.now()}`);
-        const now = new Date().toISOString();
-        const conv: Conversation = { id, title: "New chat", messages: [message], createdAt: now, updatedAt: now };
-        currentConversationIdRef.current = id;
-        setCurrentConversationId(id);
-        return [...prev, conv];
+        const limit = activeChatLimitRef.current || 5;
+        if (prev.length >= limit) {
+          const fallbackId = currentConversationIdRef.current || prev[prev.length - 1]?.id || null;
+          window.dispatchEvent(new CustomEvent("agentcoolie:plan-limit", {
+            detail: `Your current AgentCoolie plan allows ${limit} active chats. Delete an old chat or upgrade to Autopilot.`,
+          }));
+          if (!fallbackId) return prev;
+          const fallbackIdx = prev.findIndex((c) => c.id === fallbackId);
+          if (fallbackIdx === -1) return prev;
+          currentConversationIdRef.current = fallbackId;
+          setCurrentConversationId(fallbackId);
+          idx = fallbackIdx;
+        } else {
+          const id = targetConversationId || (typeof crypto !== 'undefined' && (crypto as any).randomUUID ? (crypto as any).randomUUID() : `${Date.now()}`);
+          const now = new Date().toISOString();
+          const conv: Conversation = { id, title: "New chat", messages: [message], createdAt: now, updatedAt: now };
+          currentConversationIdRef.current = id;
+          setCurrentConversationId(id);
+          return [...prev, conv];
+        }
       }
       const conv = prev[idx];
       const updated: Conversation = { ...conv, messages: [...conv.messages, message], updatedAt: new Date().toISOString() };

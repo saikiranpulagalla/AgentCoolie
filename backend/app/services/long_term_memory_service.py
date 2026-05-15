@@ -167,7 +167,7 @@ class LongTermMemoryService:
             return []
 
     async def maybe_save(self, user_id: str, user_message: str, assistant_response: str, source: str = "chat") -> None:
-        if not settings.LONG_TERM_MEMORY_ENABLED or not gemini_service:
+        if not settings.LONG_TERM_MEMORY_ENABLED:
             return
 
         saved_heuristic: list[str] = []
@@ -196,6 +196,9 @@ class LongTermMemoryService:
             if saved_heuristic
             else ""
         )
+        if not gemini_service:
+            return
+
         prompt = f"""Decide whether this user turn contains stable, important information worth remembering long-term.
 Save only durable preferences, identity details, goals, recurring plans, constraints, important relationships, or user-specific facts.
 Do not save temporary requests, greetings, one-off commands, secrets, passwords, API keys, or sensitive credentials.

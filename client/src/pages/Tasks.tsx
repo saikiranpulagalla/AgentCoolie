@@ -354,77 +354,70 @@ export default function Tasks() {
     }
   };
 
-    const openYoutubeFromTask = async (task: Task): Promise<boolean> => {
-      try {
-        // Try extract a YouTube URL/time from the task description
-        const msg = task.description || '';
-        // look for an explicit YouTube URL
-        const urlRegex = /(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/[\S]+/i;
-        const urlMatch = msg.match(urlRegex);
-        let url: string | null = urlMatch ? urlMatch[0] : null;
-
-        // extract time like t=123 or start=123 in URL
-        const timeParamRegex = /(?:t=|start=)(\d+)(s)?/i;
-        let seconds: number | null = null;
-        if (url) {
-          const m = url.match(timeParamRegex);
-          if (m && m[1]) seconds = Number(m[1]);
-        }
-
-        // If no explicit url, call server youtube open endpoint to search
-        if (!url) {
-          try {
-            const token = await getIdToken();
-            const resp = await apiFetch('/api/youtube/open', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ query: msg }) });
-            if (resp.ok) {
-              const j = await resp.json();
-              url = j?.video?.url || null;
-            }
-          } catch (e) {
-            console.warn('YouTube search failed for task open', e);
-          }
-        }
-
-        // attempt to parse natural-language time like "at 1:30" or "at 90s"
-        if (seconds === null) {
-          const atTimeRegex = /at\s+(\d+:)?\d{1,2}(?::\d{2})?\s*(am|pm)?/i; // rough
-          const m = msg.match(/at\s+(\d+:)?(\d{1,2})(?::(\d{2}))?/i);
-          if (m) {
-            // convert mm:ss or hh:mm:ss to seconds
-            const parts = m[0].replace(/at/i, '').trim().split(':').map(p => p.replace(/[^0-9]/g, ''));
-            let s = 0;
-            if (parts.length === 3) s = Number(parts[0]) * 3600 + Number(parts[1]) * 60 + Number(parts[2]);
-            else if (parts.length === 2) s = Number(parts[0]) * 60 + Number(parts[1]);
-            else s = Number(parts[0]);
-            if (!Number.isNaN(s)) seconds = s;
-          }
-        }
-
-        if (url) {
-          // add start time if available
-          if (seconds && !/([?&])(t|start)=/.test(url)) {
-            const sep = url.includes('?') ? '&' : '?';
-            url = `${url}${sep}t=${seconds}s`;
-          }
-          // try open
-          try {
-            const w = window.open(url, '_blank');
-            if (w) {
-              try { w.opener = null; } catch (e) {}
-              try { w.focus(); } catch (e) {}
-              return true;
-            }
-          } catch (e) {
-            console.warn('Failed to open YouTube from task', e);
-          }
-        }
-      } catch (e) {
-        console.error('openYoutubeFromTask error', e);
+  const openUrlInNewTab = (url: string, preOpenedWindow?: Window | null): boolean => {
+    try {
+      if (preOpenedWindow && !preOpenedWindow.closed) {
+        try { preOpenedWindow.opener = null; } catch (e) {}
+        preOpenedWindow.location.href = url;
+        try { preOpenedWindow.focus(); } catch (e) {}
+        return true;
       }
+      const w = window.open(url, '_blank');
+      if (!w) return false;
+      try { w.opener = null; } catch (e) {}
+      try { w.focus(); } catch (e) {}
+      return true;
+    } catch (e) {
+      console.warn('Failed to open browser tab', e);
       return false;
-    };
+    }
+  };
 
-  const openWebsiteFromTask = async (task: Task): Promise<boolean> => {
+  const openYoutubeFromTask = (task: Task, preparedUrl?: string | null, preOpenedWindow?: Window | null): boolean => {
+    try {
+      const msg = task.description || task.title || '';
+      const urlRegex = /(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/[\S]+/i;
+      const urlMatch = msg.match(urlRegex);
+      let url: string | null = preparedUrl || (urlMatch ? urlMatch[0] : null);
+
+      let seconds: number | null = null;
+      if (url) {
+        const m = url.match(/(?:t=|start=)(\d+)(s)?/i);
+        if (m && m[1]) seconds = Number(m[1]);
+      }
+
+      if (seconds === null) {
+        const m = msg.match(/at\s+(\d+:)?(\d{1,2})(?::(\d{2}))?/i);
+        if (m) {
+          const parts = m[0].replace(/at/i, '').trim().split(':').map(p => p.replace(/[^0-9]/g, ''));
+          let s = 0;
+          if (parts.length === 3) s = Number(parts[0]) * 3600 + Number(parts[1]) * 60 + Number(parts[2]);
+          else if (parts.length === 2) s = Number(parts[0]) * 60 + Number(parts[1]);
+          else s = Number(parts[0]);
+          if (!Number.isNaN(s)) seconds = s;
+        }
+      }
+
+      if (!url) {
+        url = `https://www.youtube.com/results?search_query=${encodeURIComponent(msg || task.title || 'youtube')}`;
+      } else if (!/^https?:\/\//i.test(url)) {
+        url = `https://${url}`;
+      }
+
+      if (seconds && !/([?&])(t|start)=/.test(url)) {
+        const sep = url.includes('?') ? '&' : '?';
+        url = `${url}${sep}t=${seconds}s`;
+      }
+
+      return openUrlInNewTab(url, preOpenedWindow);
+    } catch (e) {
+      console.error('openYoutubeFromTask error', e);
+      return false;
+    }
+  };
+
+  const openWebsiteFromTask = (task: Task, preparedUrl?: string | null, preOpenedWindow?: Window | null): boolean => {
+    if (preparedUrl) return openUrlInNewTab(preparedUrl, preOpenedWindow);
     const msg = task.description || task.title || '';
     const explicit = msg.match(/https?:\/\/[^\s]+/i)?.[0];
     const host = msg.match(/\b([a-z0-9-]+\.)+[a-z]{2,}\b/i)?.[0];
@@ -436,16 +429,7 @@ export default function Tasks() {
       .split(/\s+/)[0];
     const url = explicit || (host ? `https://${host}` : fallback ? `https://${fallback}.com` : null);
     if (!url) return false;
-    try {
-      const w = window.open(url, '_blank');
-      if (!w) return false;
-      try { w.opener = null; } catch (e) {}
-      try { w.focus(); } catch (e) {}
-      return true;
-    } catch (e) {
-      console.warn('Failed to open website from task', e);
-      return false;
-    }
+    return openUrlInNewTab(url, preOpenedWindow);
   };
 
   const patchTaskStatus = async (task: Task, status: 'pending' | 'sent' | 'failed', message: string) => {
@@ -481,18 +465,68 @@ export default function Tasks() {
     const task = tasks.find((item) => item.id === id);
     if (!task) return;
     (async () => {
-      const opened = task.type === 'youtube'
-        ? await openYoutubeFromTask(task)
-        : task.type === 'website'
-          ? await openWebsiteFromTask(task)
-          : false;
-      if (!opened) {
-        await patchTaskStatus(task, 'failed', 'Your browser blocked the tab. Click Open now again or allow pop-ups for AgentCoolie.');
-        toast({ title: 'Browser blocked the tab', description: 'Allow pop-ups for AgentCoolie, then click Open now again.', variant: 'destructive' });
-        return;
+      const isBrowserTask = task.type === 'youtube' || task.type === 'website';
+      let preOpenedWindow: Window | null = null;
+      try {
+        if (isBrowserTask) {
+          preOpenedWindow = window.open('about:blank', '_blank');
+          if (!preOpenedWindow) {
+            await patchTaskStatus(task, 'failed', 'Your browser blocked the tab. Click Open now again or allow pop-ups for AgentCoolie.');
+            toast({ title: 'Browser blocked the tab', description: 'Allow pop-ups for AgentCoolie, then click Open now again.', variant: 'destructive' });
+            return;
+          }
+          try {
+            preOpenedWindow.document.write('<!doctype html><title>AgentCoolie</title><body style="font-family: system-ui; padding: 24px;">Preparing your task...</body>');
+            preOpenedWindow.document.close();
+          } catch (e) {}
+        }
+
+        let preparedUrl: string | null = null;
+        if (isBrowserTask) {
+          const token = await getIdToken();
+          if (!token) {
+            try { preOpenedWindow?.close(); } catch (e) {}
+            toast({ title: 'Not signed in', description: 'Please sign in to run this task.', variant: 'destructive' });
+            return;
+          }
+          const resp = await apiFetch(`/api/reminders/${task.id}/execute`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          const executePayload = await resp.json().catch(() => ({}));
+          if (!resp.ok || executePayload?.status === 'failed') {
+            try { preOpenedWindow?.close(); } catch (e) {}
+            toast({
+              title: 'Task failed',
+              description: executePayload?.detail || executePayload?.message || executePayload?.task?.executionMessage || 'Could not run this task.',
+              variant: 'destructive',
+            });
+            return;
+          }
+          preparedUrl = executePayload?.action?.open_url || null;
+          if (executePayload?.task) {
+            const updatedTask = reminderRowToTask(executePayload.task, task.createdAt);
+            setTasks((prev) => prev.map((item) => (item.id === task.id ? updatedTask : item)));
+          }
+        }
+
+        const opened = task.type === 'youtube'
+          ? openYoutubeFromTask(task, preparedUrl, preOpenedWindow)
+          : task.type === 'website'
+            ? openWebsiteFromTask(task, preparedUrl, preOpenedWindow)
+            : false;
+        if (!opened) {
+          await patchTaskStatus(task, 'failed', 'Your browser blocked the tab. Click Open now again or allow pop-ups for AgentCoolie.');
+          toast({ title: 'Browser blocked the tab', description: 'Allow pop-ups for AgentCoolie, then click Open now again.', variant: 'destructive' });
+          return;
+        }
+        await patchTaskStatus(task, 'sent', `${task.type === 'youtube' ? 'YouTube' : 'Website'} opened in the browser.`);
+        toast({ title: 'Task opened', description: task.title });
+      } catch (err) {
+        try { preOpenedWindow?.close(); } catch (e) {}
+        console.error(err);
+        toast({ title: 'Task failed', description: 'Could not reach the server or open the task.', variant: 'destructive' });
       }
-      await patchTaskStatus(task, 'sent', `${task.type === 'youtube' ? 'YouTube' : 'Website'} opened in the browser.`);
-      toast({ title: 'Task opened', description: task.title });
     })();
   };
 
@@ -500,6 +534,10 @@ export default function Tasks() {
     const task = tasks.find((t) => t.id === id);
     if (task) {
       const newStatus = task.completed ? 'pending' : 'sent';
+      if (newStatus === 'sent' && (task.type === 'youtube' || task.type === 'website')) {
+        handleOpenTask(id);
+        return;
+      }
       (async () => {
         try {
           const token = await getIdToken();
@@ -530,16 +568,6 @@ export default function Tasks() {
           setTasks((prev) => prev.map((item) => (item.id === id ? updatedTask : item)));
           toast({ title: 'Task updated', description: `Task ${task.title} marked ${newStatus === 'sent' ? 'complete' : 'pending'}` });
           if (newStatus === 'sent') {
-            if (task.type === 'youtube' || task.type === 'website') {
-              const opened = task.type === 'youtube'
-                ? await openYoutubeFromTask(task)
-                : await openWebsiteFromTask(task);
-              if (!opened) {
-                await patchTaskStatus(task, 'failed', 'Your browser blocked the tab. Click Open now again or allow pop-ups for AgentCoolie.');
-                toast({ title: 'Browser blocked the tab', description: 'Allow pop-ups for AgentCoolie, then click Open now again.', variant: 'destructive' });
-                return;
-              }
-            }
             addNotification({ id: task.id, title: task.title, description: task.description, type: task.type, completedAt: new Date() });
           }
         } catch (err) {

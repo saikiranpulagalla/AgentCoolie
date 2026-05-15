@@ -60,26 +60,12 @@ create trigger user_credentials_set_updated_at
 alter table public.user_credentials enable row level security;
 
 drop policy if exists "Users can read own credentials" on public.user_credentials;
-create policy "Users can read own credentials"
-  on public.user_credentials
-  for select
-  using (auth.uid()::text = user_id);
-
 drop policy if exists "Users can insert own credentials" on public.user_credentials;
-create policy "Users can insert own credentials"
-  on public.user_credentials
-  for insert
-  with check (auth.uid()::text = user_id);
-
 drop policy if exists "Users can update own credentials" on public.user_credentials;
-create policy "Users can update own credentials"
-  on public.user_credentials
-  for update
-  using (auth.uid()::text = user_id)
-  with check (auth.uid()::text = user_id);
-
 drop policy if exists "Users can delete own credentials" on public.user_credentials;
-create policy "Users can delete own credentials"
-  on public.user_credentials
-  for delete
-  using (auth.uid()::text = user_id);
+
+-- OAuth refresh tokens and connected-tool credentials must never be readable by
+-- browser clients. The FastAPI backend uses the Supabase service-role key and
+-- performs owner checks before reading or mutating this table.
+revoke all on table public.user_credentials from anon;
+revoke all on table public.user_credentials from authenticated;

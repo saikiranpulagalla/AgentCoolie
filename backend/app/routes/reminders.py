@@ -339,7 +339,17 @@ async def execute_reminder(
     if not task:
         raise HTTPException(status_code=404, detail="Reminder not found")
 
+    task_type = task.get("type") or "general"
+    existing_metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
     current_status = str(task.get("status") or ("sent" if task.get("completed") else "pending"))
+    if current_status in {"calling", "failed"} and task_type in {"youtube", "website"}:
+        open_url = existing_metadata.get("browser_open_url")
+        if isinstance(open_url, str) and open_url.strip():
+            return {
+                "status": "browser_action_required",
+                "task": _task_to_reminder(task),
+                "action": {"open_url": open_url.strip()},
+            }
     if current_status in {"sent", "missed_offline", "failed"}:
         return {
             "status": "already_handled",
@@ -370,13 +380,24 @@ async def execute_reminder(
         }
     task = claim
 
-    task_type = task.get("type") or "general"
     message = task.get("description") or task.get("title") or ""
     execution_message = "Task completed by AgentCoolie."
     action: dict = {}
     status_value = "sent"
 
     try:
+        if task_type == "youtube":
+            await plan_service.check_and_consume(
+                user_id,
+                "youtube_opens",
+                metadata={"source": "reminders_execute", "task_id": reminder_id},
+            )
+        elif task_type == "website":
+            await plan_service.check_and_consume(
+                user_id,
+                "website_opens",
+                metadata={"source": "reminders_execute", "task_id": reminder_id},
+            )
         await plan_service.check_and_consume(
             user_id,
             "task_executions",
@@ -421,6 +442,21 @@ async def execute_reminder(
                 if call_result
                 else "YouTube task is ready to open in the browser."
             )
+            metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+            updated = await supabase_service.update_task(
+                reminder_id,
+                user_id=user_id,
+                status="calling",
+                completed=False,
+                execution_message=execution_message,
+                last_attempt_at=datetime.now().astimezone().isoformat(),
+                metadata={**metadata, "browser_open_url": action["open_url"]},
+            )
+            return {
+                "status": "browser_action_required",
+                "task": _task_to_reminder(updated),
+                "action": action,
+            }
 
         elif task_type == "website":
             url = _website_url_from_message(message)
@@ -432,6 +468,21 @@ async def execute_reminder(
                 if call_result
                 else "Website task is ready to open in the browser."
             )
+            metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+            updated = await supabase_service.update_task(
+                reminder_id,
+                user_id=user_id,
+                status="calling",
+                completed=False,
+                execution_message=execution_message,
+                last_attempt_at=datetime.now().astimezone().isoformat(),
+                metadata={**metadata, "browser_open_url": action["open_url"]},
+            )
+            return {
+                "status": "browser_action_required",
+                "task": _task_to_reminder(updated),
+                "action": action,
+            }
 
         update_payload = {
             "status": status_value,

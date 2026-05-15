@@ -3,12 +3,71 @@ AI and embedding services.
 """
 
 import logging
+import time
 from typing import Any, Optional, List
 from app.core.config import settings
 from app.services.runtime_config_service import runtime_config_service
 from app.services.tracing_service import traceable
 
 logger = logging.getLogger(__name__)
+
+AI_KEY_COOLDOWN_SECONDS = 120
+
+
+def _error_status_code(error: Exception) -> int | None:
+    status = getattr(error, "status_code", None)
+    if isinstance(status, int):
+        return status
+    response = getattr(error, "response", None)
+    response_status = getattr(response, "status_code", None)
+    return response_status if isinstance(response_status, int) else None
+
+
+def _ai_error_category(error: Exception) -> str:
+    """Classify provider errors so fallback only rotates keys when it can help."""
+    status = _error_status_code(error)
+    text = str(error).lower()
+
+    if status in {401, 403} or any(term in text for term in (
+        "api key not valid",
+        "invalid api key",
+        "unauthenticated",
+        "permission denied",
+        "forbidden",
+    )):
+        return "key"
+    if status in {408, 409, 425, 429, 500, 502, 503, 504}:
+        return "retryable"
+    if status is not None and 400 <= status < 500:
+        return "fatal"
+    if any(term in text for term in (
+        "quota",
+        "rate limit",
+        "resource_exhausted",
+        "temporarily unavailable",
+        "timeout",
+        "timed out",
+        "overloaded",
+        "unavailable",
+    )):
+        return "retryable"
+    if any(term in text for term in (
+        "invalid argument",
+        "bad request",
+        "model not found",
+        "unsupported",
+        "safety",
+    )):
+        return "fatal"
+    return "retryable"
+
+
+def _available_keys(api_keys: list[str], cooldowns: dict[str, float]) -> list[str]:
+    now = time.monotonic()
+    ready = [key for key in api_keys if cooldowns.get(key, 0) <= now]
+    if ready:
+        return ready
+    return [min(api_keys, key=lambda key: cooldowns.get(key, now))]
 
 
 def _error_summary(error: Exception) -> str:
@@ -107,6 +166,8 @@ class GeminiService:
         self.vision_model = None
         self.model_name = settings.GEMINI_MODEL
         self.vision_model_name = settings.GEMINI_VISION_MODEL
+        self._google_key_cooldowns: dict[str, float] = {}
+        self._groq_key_cooldowns: dict[str, float] = {}
         
         try:
             import google.generativeai as genai
@@ -141,7 +202,8 @@ class GeminiService:
         last_error: Exception | None = None
         import google.generativeai as genai
 
-        for index, api_key in enumerate(api_keys):
+        keys_to_try = _available_keys(api_keys, self._google_key_cooldowns)
+        for api_key in keys_to_try:
             try:
                 genai.configure(api_key=api_key)
                 model = genai.GenerativeModel(model_name)
@@ -149,7 +211,13 @@ class GeminiService:
                 return response.text
             except Exception as e:
                 last_error = e
-                logger.warning("Google AI key #%s failed: %s", index + 1, _error_summary(e))
+                category = _ai_error_category(e)
+                if category in {"key", "retryable"}:
+                    self._google_key_cooldowns[api_key] = time.monotonic() + AI_KEY_COOLDOWN_SECONDS
+                key_index = api_keys.index(api_key) + 1 if api_key in api_keys else "?"
+                logger.warning("Google AI key #%s failed (%s): %s", key_index, category, _error_summary(e))
+                if category == "fatal":
+                    raise
 
         raise last_error or RuntimeError("Google AI generation failed")
 
@@ -169,7 +237,8 @@ class GeminiService:
         except ImportError as e:
             raise RuntimeError("OpenAI SDK is required for Groq fallback") from e
 
-        for index, groq_api_key in enumerate(groq_api_keys):
+        keys_to_try = _available_keys(groq_api_keys, self._groq_key_cooldowns)
+        for groq_api_key in keys_to_try:
             try:
                 client = OpenAI(
                     api_key=groq_api_key,
@@ -183,7 +252,13 @@ class GeminiService:
                 return response.choices[0].message.content or ""
             except Exception as e:
                 last_error = e
-                logger.warning("Groq key #%s failed: %s", index + 1, _error_summary(e))
+                category = _ai_error_category(e)
+                if category in {"key", "retryable"}:
+                    self._groq_key_cooldowns[groq_api_key] = time.monotonic() + AI_KEY_COOLDOWN_SECONDS
+                key_index = groq_api_keys.index(groq_api_key) + 1 if groq_api_key in groq_api_keys else "?"
+                logger.warning("Groq key #%s failed (%s): %s", key_index, category, _error_summary(e))
+                if category == "fatal":
+                    raise
 
         raise last_error or RuntimeError("Groq fallback failed")
 

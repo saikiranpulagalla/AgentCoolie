@@ -319,6 +319,35 @@ class SupabaseService:
             logger.error(f"Failed to create task: {e}")
             raise
 
+    async def create_tasks(self, tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Create multiple tasks in one PostgREST insert."""
+        if not tasks:
+            return []
+
+        try:
+            payloads = []
+            for task in tasks:
+                payloads.append({
+                    "user_id": task["user_id"],
+                    "title": task["title"],
+                    "description": task.get("description"),
+                    "type": task["type"],
+                    "priority": task.get("priority") or "medium",
+                    "due_date": task.get("due_date"),
+                    "completed": False,
+                    "status": "pending",
+                    "metadata": task.get("metadata") or {},
+                })
+
+            def _create_many():
+                return self.client.table("tasks").insert(payloads).execute()
+
+            response = await asyncio.to_thread(_create_many)
+            return response.data or []
+        except Exception as e:
+            logger.error(f"Failed to create tasks: {e}")
+            raise
+
     async def get_tasks(self, user_id: str) -> List[Dict[str, Any]]:
         """Get user tasks."""
         try:

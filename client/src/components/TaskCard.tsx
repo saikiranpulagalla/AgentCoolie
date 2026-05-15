@@ -20,6 +20,7 @@ interface TaskCardProps {
 }
 
 const typeIcons = {
+  general: AlertCircle,
   gmail: Mail,
   whatsapp: MessageCircle,
   reminder: AlertCircle,
@@ -28,6 +29,7 @@ const typeIcons = {
 };
 
 const typeColors = {
+  general: "from-primary/10 to-chart-2/10",
   gmail: "from-chart-1/20 to-chart-2/20",
   whatsapp: "from-chart-3/20 to-chart-4/20",
   reminder: "from-chart-4/20 to-chart-5/20",

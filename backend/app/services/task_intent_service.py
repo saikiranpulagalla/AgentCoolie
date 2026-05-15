@@ -304,7 +304,7 @@ class TaskIntentService:
             bool(TIME_PATTERN.search(message)) and bool(ACTION_PATTERN.search(message))
         )
 
-    async def _create_task_from_parts(
+    def _prepare_task_from_parts(
         self,
         user_id: str,
         *,
@@ -335,32 +335,16 @@ class TaskIntentService:
                 title = f"Send email to {gmail_payload['to']}"
                 description = gmail_payload["body"]
 
-        await plan_service.ensure_active_task_slot(user_id)
-        if task_type == "gmail":
-            await plan_service.ensure_feature_available(user_id, "gmail_sends")
-        if notify_by_call:
-            await plan_service.ensure_critical_task_slot(user_id)
-            await plan_service.check_and_consume(
-                user_id,
-                "call_reminders",
-                metadata={"source": "chat_multi_task_creation", "task_type": task_type},
-            )
-            metadata["call_quota_reserved"] = True
-        await plan_service.check_and_consume(
-            user_id,
-            "task_creations",
-            metadata={"source": "chat_multi", "task_type": task_type, "notify_by_call": notify_by_call},
-        )
-
-        return await supabase_service.create_task(
-            user_id=user_id,
-            title=title,
-            description=description,
-            task_type=task_type,
-            priority=priority,
-            due_date=due_date,
-            metadata=metadata,
-        )
+        return {
+            "user_id": user_id,
+            "title": title,
+            "description": description,
+            "type": task_type,
+            "priority": priority,
+            "due_date": due_date,
+            "metadata": metadata,
+            "_notify_by_call": notify_by_call,
+        }
 
     async def maybe_create_tasks_from_message(self, user_id: str, message: str) -> list[dict[str, Any]]:
         """Create multiple tasks for explicit multi-task requests."""
@@ -376,17 +360,47 @@ class TaskIntentService:
         if not due_date:
             return []
 
-        tasks: list[dict[str, Any]] = []
+        prepared_tasks: list[dict[str, Any]] = []
         for item in items:
-            tasks.append(
-                await self._create_task_from_parts(
+            prepared_tasks.append(
+                self._prepare_task_from_parts(
                     user_id,
                     item_text=item,
                     due_date=due_date,
                     source_message=message,
                 )
             )
-        return tasks
+
+        task_count = len(prepared_tasks)
+        call_count = sum(1 for task in prepared_tasks if task.get("_notify_by_call"))
+        gmail_count = sum(1 for task in prepared_tasks if task.get("type") == "gmail")
+
+        await plan_service.ensure_active_task_slot(user_id, amount=task_count)
+        if gmail_count:
+            await plan_service.ensure_feature_available(user_id, "gmail_sends")
+        if call_count:
+            await plan_service.ensure_critical_task_slot(user_id, amount=call_count)
+            await plan_service.check_and_consume(
+                user_id,
+                "call_reminders",
+                amount=call_count,
+                metadata={"source": "chat_multi_task_creation", "task_count": task_count},
+            )
+            for task in prepared_tasks:
+                if task.get("_notify_by_call"):
+                    task["metadata"]["call_quota_reserved"] = True
+        await plan_service.check_and_consume(
+            user_id,
+            "task_creations",
+            amount=task_count,
+            metadata={"source": "chat_multi", "task_count": task_count, "call_count": call_count},
+        )
+
+        rows = [
+            {key: value for key, value in task.items() if not key.startswith("_")}
+            for task in prepared_tasks
+        ]
+        return await supabase_service.create_tasks(rows)
 
     async def maybe_create_task_from_message(self, user_id: str, message: str) -> Optional[dict[str, Any]]:
         message = message.strip()

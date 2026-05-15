@@ -13,7 +13,7 @@ export type Task = {
   id: string;
   title: string;
   description?: string;
-  type: "gmail" | "whatsapp" | "reminder" | "youtube" | "website";
+  type: "general" | "gmail" | "whatsapp" | "reminder" | "youtube" | "website";
   priority: "low" | "medium" | "high";
   completed: boolean;
   status?: "pending" | "calling" | "sent" | "missed_offline" | "failed";

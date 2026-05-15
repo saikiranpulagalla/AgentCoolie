@@ -146,8 +146,14 @@ export default function Chat() {
       return /\b(open|play|show|find|search|watch)\b/.test(t) && /\b(video|youtube|song|trailer|clip)\b/.test(t);
     })();
 
-    const openUrlInNewTab = (url: string): "new-tab" | "unknown" => {
+    const openUrlInNewTab = (url: string, preOpenedWindow?: Window | null): "new-tab" | "unknown" => {
       try {
+        if (preOpenedWindow && !preOpenedWindow.closed) {
+          try { preOpenedWindow.opener = null; } catch (e) { /* ignore opener hardening errors */ }
+          preOpenedWindow.location.href = url;
+          try { preOpenedWindow.focus(); } catch (e) { /* ignore focus errors */ }
+          return "new-tab";
+        }
         // Passing "noopener" as a feature can make Chromium return null even
         // when the tab opens. Use a normal open, then harden opener manually.
         const w = window.open(url, '_blank');
@@ -213,6 +219,17 @@ export default function Chat() {
         return;
       }
 
+      let videoPreOpenedWindow: Window | null = null;
+      try {
+        videoPreOpenedWindow = window.open('about:blank', '_blank');
+        if (videoPreOpenedWindow) {
+          videoPreOpenedWindow.document.write('<!doctype html><title>AgentCoolie</title><body style="font-family: system-ui; padding: 24px;">Finding your video...</body>');
+          videoPreOpenedWindow.document.close();
+        }
+      } catch (e) {
+        videoPreOpenedWindow = null;
+      }
+
       try {
         const resp = await apiFetch('/api/youtube/open', {
           method: 'POST',
@@ -237,9 +254,11 @@ export default function Chat() {
               timestamp: new Date(),
             }, targetConversationId);
             void recordConversationExchange(targetConversationId, messageText, assistantContent);
+            try { videoPreOpenedWindow?.close(); } catch (e) { /* ignore */ }
             setIsTyping(false);
             return;
           }
+          try { videoPreOpenedWindow?.close(); } catch (e) { /* ignore */ }
         }
         
         if (resp.ok) {
@@ -254,7 +273,7 @@ export default function Chat() {
               channel: video.channel,
             };
 
-            const openTarget = openUrlInNewTab(video.url);
+            const openTarget = openUrlInNewTab(video.url, videoPreOpenedWindow);
 
             // Craft assistant message: include fallback link only when both methods indicate failure
             addMessage({
@@ -280,7 +299,7 @@ export default function Chat() {
             return;
           }
 
-          const openTarget = openUrlInNewTab(youtubeSearchUrl);
+          const openTarget = openUrlInNewTab(youtubeSearchUrl, videoPreOpenedWindow);
           const assistantContent = openTarget === "new-tab"
             ? `I opened YouTube search results for your request.\n\n${youtubeSearchUrl}`
             : `I opened or attempted to open YouTube search results. If they did not appear, open them here:\n\n${youtubeSearchUrl}`;
@@ -307,6 +326,7 @@ export default function Chat() {
           // 3. No video found (continue with normal chat)
         }
       } catch (e) {
+        try { videoPreOpenedWindow?.close(); } catch (closeError) { /* ignore */ }
         console.warn('YouTube/video handling failed:', e);
         // Continue with normal chat flow on error
       }
@@ -394,6 +414,16 @@ export default function Chat() {
 
       let handled = false;
       if (shouldTrySiteQuickPath) {
+        let sitePreOpenedWindow: Window | null = null;
+        try {
+          sitePreOpenedWindow = window.open('about:blank', '_blank');
+          if (sitePreOpenedWindow) {
+            sitePreOpenedWindow.document.write('<!doctype html><title>AgentCoolie</title><body style="font-family: system-ui; padding: 24px;">Opening the website...</body>');
+            sitePreOpenedWindow.document.close();
+          }
+        } catch (e) {
+          sitePreOpenedWindow = null;
+        }
         try {
           const siteResp = await apiFetch('/api/website/open', {
             method: 'POST',
@@ -411,9 +441,11 @@ export default function Chat() {
               };
               addMessage(assistantMsg, targetConversationId);
               void recordConversationExchange(targetConversationId, messageText, assistantMsg.content);
+              try { sitePreOpenedWindow?.close(); } catch (e) { /* ignore */ }
               setIsTyping(false);
               return;
             }
+            try { sitePreOpenedWindow?.close(); } catch (e) { /* ignore */ }
           }
           if (siteResp.ok) {
             const siteJson = await siteResp.json();
@@ -431,7 +463,7 @@ export default function Chat() {
               // Never redirect the app's current tab as a popup fallback; that can double-open
               // in browsers that partially allow window.open and makes the chat page disappear.
               if (siteJson?.final_url) {
-                const openTarget = openUrlInNewTab(siteJson.final_url);
+                const openTarget = openUrlInNewTab(siteJson.final_url, sitePreOpenedWindow);
                 const assistantMsg = {
                   id: (Date.now() + 1).toString(),
                   content: `I found the website you're looking for.\n\n${
@@ -449,8 +481,9 @@ export default function Chat() {
                 addMessage(assistantMsg, targetConversationId);
                 void recordConversationExchange(targetConversationId, messageText, assistantMsg.content);
                 setIsTyping(false);
-                return; // handled — don't forward to webhook
+                return; // handled - don't forward to webhook
               }
+              try { sitePreOpenedWindow?.close(); } catch (e) { /* ignore */ }
               // If the tool returned a screenshot URL, show a message with link
               if (siteJson?.data?.screenshot_url) {
                 const assistantMsg = {
@@ -474,7 +507,9 @@ export default function Chat() {
               }
             }
           }
+          try { sitePreOpenedWindow?.close(); } catch (e) { /* ignore */ }
         } catch (e) {
+          try { sitePreOpenedWindow?.close(); } catch (closeError) { /* ignore */ }
           // ignore and fall back to webhook forwarding
           console.warn('Website quick-path failed:', e);
         }
