@@ -31,9 +31,11 @@ def _ai_error_category(error: Exception) -> str:
     if status in {401, 403} or any(term in text for term in (
         "api key not valid",
         "invalid api key",
+        "api key expired",
         "unauthenticated",
         "permission denied",
         "forbidden",
+        "api_key_invalid",
     )):
         return "key"
     if status in {408, 409, 425, 429, 500, 502, 503, 504}:

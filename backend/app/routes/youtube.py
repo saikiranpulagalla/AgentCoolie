@@ -118,6 +118,25 @@ def _enforce_request_content_length(request: Request) -> None:
         )
 
 
+def _attachment_provider_error(kind: str, error: Exception | None = None) -> str:
+    text = str(error or "").lower()
+    if any(term in text for term in ("quota", "rate limit", "resource_exhausted", "429")):
+        return (
+            f"{kind} is temporarily unavailable because the AI provider quota is exhausted. "
+            "Please try again later."
+        )
+    if any(term in text for term in ("api key", "api_key_invalid", "unauthenticated", "permission", "forbidden")):
+        return (
+            f"{kind} is temporarily unavailable because the AI provider key needs attention. "
+            "Please try again after the backend keys are refreshed."
+        )
+    return f"{kind} is temporarily unavailable right now. Please try again later."
+
+
+def _is_default_audio_prompt(message: str) -> bool:
+    return str(message or "").strip().lower().startswith("transcribe this audio message")
+
+
 async def _get_preferences_for_prompt(user_id: str) -> dict | None:
     try:
         return await supabase_service.get_preferences(user_id)
@@ -400,27 +419,44 @@ async def webhook_proxy(
         logger.debug(f"Webhook proxy received message: {str(message)[:50]}...")
 
         attachment_context: list[str] = []
+        direct_attachment_response: str | None = None
+        direct_attachment_tool: str | None = None
+
+        if (image_attachment or image_file) and not gemini_service:
+            direct_attachment_response = _attachment_provider_error("Image analysis")
+            direct_attachment_tool = "image"
+
         if image_attachment and gemini_service:
             image_url = str(image_attachment.get("url", ""))
             image_base64 = image_url.split(",", 1)[1] if "," in image_url else image_url
             image_size = _estimated_base64_size(image_base64)
             _enforce_upload_size(str(image_attachment.get("name") or "Image"), image_size)
             await plan_service.consume_upload(user_id, "image", image_size)
-            image_summary = await gemini_service.analyze_image(
-                image_base64,
-                prompt=f"Describe the image and extract any text relevant to this user request: {message}",
-            )
-            attachment_context.append(f"Image analysis: {image_summary}")
+            try:
+                image_summary = await gemini_service.analyze_image(
+                    image_base64,
+                    prompt=f"Describe the image and extract any text relevant to this user request: {message}",
+                )
+                attachment_context.append(f"Image analysis: {image_summary}")
+            except Exception as e:
+                logger.warning(f"Image attachment analysis failed: {e}")
+                direct_attachment_response = _attachment_provider_error("Image analysis", e)
+                direct_attachment_tool = "image"
         if image_file and gemini_service:
             image_bytes = await image_file.read()
             _enforce_upload_size(str(getattr(image_file, "filename", None) or "Image"), len(image_bytes))
             await plan_service.consume_upload(user_id, "image", len(image_bytes))
             image_base64 = base64.b64encode(image_bytes).decode("ascii")
-            image_summary = await gemini_service.analyze_image(
-                image_base64,
-                prompt=f"Describe the image and extract any text relevant to this user request: {message}",
-            )
-            attachment_context.append(f"Image analysis: {image_summary}")
+            try:
+                image_summary = await gemini_service.analyze_image(
+                    image_base64,
+                    prompt=f"Describe the image and extract any text relevant to this user request: {message}",
+                )
+                attachment_context.append(f"Image analysis: {image_summary}")
+            except Exception as e:
+                logger.warning(f"Uploaded image analysis failed: {e}")
+                direct_attachment_response = _attachment_provider_error("Image analysis", e)
+                direct_attachment_tool = "image"
         if pdf_attachment:
             pdf_url = str(pdf_attachment.get("url", ""))
             pdf_base64 = pdf_url.split(",", 1)[1] if "," in pdf_url else pdf_url
@@ -472,6 +508,14 @@ async def webhook_proxy(
                     f"For this file I read {pdf_info.get('pages_read')} of {pdf_info.get('page_count')} pages."
                 )
                 attachment_context.append(f"PDF text excerpt ({limit_note}): {pdf_text}")
+
+        if audio_file and not gemini_service:
+            direct_attachment_response = (
+                f"{_attachment_provider_error('Audio transcription')} "
+                "Please try recording again or type the message."
+            )
+            direct_attachment_tool = "audio"
+
         if audio_file and gemini_service:
             audio_bytes = await audio_file.read()
             _enforce_upload_size(str(getattr(audio_file, "filename", None) or "Audio"), len(audio_bytes))
@@ -484,12 +528,28 @@ async def webhook_proxy(
                 )
                 if transcript.strip():
                     attachment_context.append(f"Audio transcript: {transcript.strip()}")
-                    if message.startswith("Transcribe this audio message"):
+                    if _is_default_audio_prompt(message):
                         message = transcript.strip()
             except Exception as e:
                 logger.warning(f"Audio transcription failed: {e}")
-                if message.startswith("Transcribe this audio message"):
-                    message = "I could not transcribe that audio. Please try recording again or type the message."
+                direct_attachment_response = (
+                    f"{_attachment_provider_error('Audio transcription', e)} "
+                    "Please try recording again or type the message."
+                )
+                direct_attachment_tool = "audio"
+
+        if direct_attachment_response and not attachment_context:
+            return {
+                "status": "success",
+                "response": direct_attachment_response,
+                "userId": user_id,
+                "userName": user_name,
+                "tool_used": direct_attachment_tool,
+                "tool_status": {
+                    "available": False,
+                    "reason": direct_attachment_response,
+                },
+            }
 
         result = await chat_workflow_service.process(
             user_id=user_id,
