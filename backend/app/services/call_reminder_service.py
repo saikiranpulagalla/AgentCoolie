@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.services.plan_service import plan_service
 from app.services.runtime_config_service import runtime_config_service
 from app.services.supabase_service import supabase_service
+from app.services.tool_audit_service import tool_audit_service
 
 logger = logging.getLogger(__name__)
 
@@ -169,19 +170,36 @@ class CallReminderService:
         return await self.get_user_phone(user_id) if user_id else None
 
     async def place_task_call(self, task: dict[str, Any]) -> dict[str, Any]:
+        user_id = str(task.get("user_id") or "")
+        task_id = str(task.get("id") or "")
         config = await self.get_twilio_config()
         account_sid = config.get("TWILIO_ACCOUNT_SID")
         auth_token = config.get("TWILIO_AUTH_TOKEN")
         from_number = config.get("TWILIO_FROM_NUMBER")
         if not account_sid or not auth_token or not from_number:
+            await tool_audit_service.record(
+                user_id,
+                tool="call_reminder",
+                action="place_call",
+                stage="blocked",
+                status="not_configured",
+                metadata={"task_id": task_id},
+            )
             raise RuntimeError("Twilio call reminders are not configured on the backend.")
 
         to_number = await self.resolve_task_phone(task)
         if not to_number:
+            await tool_audit_service.record(
+                user_id,
+                tool="call_reminder",
+                action="place_call",
+                stage="blocked",
+                status="missing_phone",
+                metadata={"task_id": task_id},
+            )
             raise RuntimeError("No call-reminder phone number is saved for this user.")
 
         metadata = _task_metadata(task)
-        user_id = str(task.get("user_id") or "")
         if user_id and not metadata.get("call_quota_reserved"):
             await plan_service.check_and_consume(
                 user_id,
@@ -194,6 +212,15 @@ class CallReminderService:
             "<Response>"
             f"<Say voice=\"alice\">{html.escape(message)}</Say>"
             "</Response>"
+        )
+
+        await tool_audit_service.record(
+            user_id,
+            tool="call_reminder",
+            action="place_call",
+            stage="started",
+            status="pending",
+            metadata={"task_id": task_id, "to": to_number, "message": message},
         )
 
         def _send() -> dict[str, Any]:
@@ -215,7 +242,39 @@ class CallReminderService:
                 raise _friendly_twilio_error(response.status_code, payload, response.text[:300])
             return response.json()
 
-        result = await asyncio.to_thread(_send)
+        try:
+            result = await asyncio.to_thread(_send)
+        except Exception as e:
+            await tool_audit_service.record(
+                user_id,
+                tool="call_reminder",
+                action="place_call",
+                stage="completed",
+                status="failed",
+                metadata={
+                    "task_id": task_id,
+                    "to": to_number,
+                    "error": str(e),
+                    "error_code": getattr(e, "code", None),
+                    "provider_status": getattr(e, "provider_status", None),
+                    "more_info": getattr(e, "more_info", None),
+                },
+            )
+            raise
+
+        await tool_audit_service.record(
+            user_id,
+            tool="call_reminder",
+            action="place_call",
+            stage="completed",
+            status="success",
+            metadata={
+                "task_id": task_id,
+                "to": to_number,
+                "sid": result.get("sid"),
+                "provider_status": result.get("status"),
+            },
+        )
         return {
             "provider": "twilio",
             "to": to_number,

@@ -18,6 +18,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 
+from app.core.config import settings
 from app.services import call_reminder_service, firebase_service, plan_service, supabase_service
 from app.services.supabase_service import is_connectivity_error
 from app.services.task_execution_service import execute_gmail_task
@@ -357,6 +358,15 @@ async def execute_reminder(
             "action": {},
         }
 
+    now_iso = datetime.now().astimezone().isoformat()
+    claim_metadata = {
+        **existing_metadata,
+        "execution_scope": "manual_execute",
+        "execution_attempt": int(existing_metadata.get("execution_attempt") or 0) + 1,
+        "execution_claimed_at": now_iso,
+        "execution_lease_seconds": max(60, int(settings.TASK_EXECUTION_LEASE_SECONDS or 300)),
+    }
+
     try:
         claim = await supabase_service.claim_pending_task(
             reminder_id,
@@ -364,7 +374,8 @@ async def execute_reminder(
             status="calling",
             completed=False,
             execution_message="Task is being executed by AgentCoolie.",
-            last_attempt_at=datetime.now().astimezone().isoformat(),
+            last_attempt_at=now_iso,
+            metadata=claim_metadata,
         )
     except Exception as e:
         raise _storage_http_exception("claim reminder execution", e)
@@ -404,7 +415,7 @@ async def execute_reminder(
             metadata={"source": "reminders_execute", "task_type": task_type, "task_id": reminder_id},
         )
         call_result = None
-        existing_metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+        existing_metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else claim_metadata
         if call_reminder_service.task_wants_call(task) and existing_metadata.get("call_status") != "placed":
             await supabase_service.update_task(
                 reminder_id,
@@ -413,9 +424,10 @@ async def execute_reminder(
                 completed=False,
                 execution_message="Call reminder is being placed.",
                 last_attempt_at=datetime.now().astimezone().isoformat(),
+                metadata=existing_metadata,
             )
             call_result = await call_reminder_service.place_task_call(task)
-            metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+            metadata = existing_metadata
             metadata = {
                 **metadata,
                 "call_status": "placed",
@@ -450,7 +462,11 @@ async def execute_reminder(
                 completed=False,
                 execution_message=execution_message,
                 last_attempt_at=datetime.now().astimezone().isoformat(),
-                metadata={**metadata, "browser_open_url": action["open_url"]},
+                metadata={
+                    **metadata,
+                    "browser_open_url": action["open_url"],
+                    "execution_scope": "browser_action_required",
+                },
             )
             return {
                 "status": "browser_action_required",
@@ -476,7 +492,11 @@ async def execute_reminder(
                 completed=False,
                 execution_message=execution_message,
                 last_attempt_at=datetime.now().astimezone().isoformat(),
-                metadata={**metadata, "browser_open_url": action["open_url"]},
+                metadata={
+                    **metadata,
+                    "browser_open_url": action["open_url"],
+                    "execution_scope": "browser_action_required",
+                },
             )
             return {
                 "status": "browser_action_required",
@@ -491,7 +511,11 @@ async def execute_reminder(
             "last_attempt_at": datetime.now().astimezone().isoformat(),
         }
         if isinstance(task.get("metadata"), dict):
-            update_payload["metadata"] = task["metadata"]
+            update_payload["metadata"] = {
+                **task["metadata"],
+                "execution_scope": "completed",
+                "execution_completed_at": datetime.now().astimezone().isoformat(),
+            }
         updated = await supabase_service.update_task(reminder_id, user_id=user_id, **update_payload)
         return {"status": "success", "task": _task_to_reminder(updated), "action": action}
 
@@ -499,7 +523,8 @@ async def execute_reminder(
         if is_connectivity_error(e):
             raise HTTPException(status_code=503, detail=SUPABASE_UNREACHABLE_DETAIL)
         error_message = str(e)[:500]
-        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else claim_metadata
+        metadata = {**metadata, "execution_scope": "failed"}
         if call_reminder_service.task_wants_call(task):
             metadata = {
                 **metadata,

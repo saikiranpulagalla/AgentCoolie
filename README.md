@@ -16,6 +16,89 @@ This repository contains the production frontend, backend API, SQL schema files,
 - Mark important tasks for phone-call reminders.
 - Personalize tone, response length, formality, and emoji usage.
 
+## Feature Catalog
+
+### Chat And Routing
+
+- Main entry point: `POST /api/webhook/proxy`.
+- The frontend can send plain text, JSON, multipart files, image attachments, PDF attachments, and audio recordings.
+- `backend/app/services/chat_workflow_service.py` acts as the main router. It decides whether the message should become a general LLM answer, web search, task creation, Gmail workflow, YouTube open, website open, image/PDF/audio analysis, or pending multi-turn tool flow.
+- Every request is scoped by Firebase UID. The backend derives the user from the Firebase token; clients are not trusted to provide their own `user_id`.
+- Chat messages are stored in Supabase `chat_messages`, and recent chat context is stored in Redis per user and per conversation.
+
+### Memory And Personalization
+
+- Short-term memory: Redis, scoped by `user_id` and `conversation_id`.
+- Long-term memory: Supabase `long_term_memories`, selected only when the message looks important enough.
+- Personalization: Supabase `user_preferences`, controlled by the Personalization page and injected into the agent prompt.
+- Tasks and credentials are also available as durable user-level context where relevant.
+- Short-term memory is intentionally chat-specific. Long-term memory is intentionally user-wide.
+- Deleting a chat also deletes that chat's Redis short memory and pending tool state.
+
+### Web Search
+
+- Web search uses SerpAPI/Google first when `SERPAPI_API_KEY` is configured.
+- If SerpAPI fails or is missing, the backend falls back to DuckDuckGo HTML, DuckDuckGo Lite, Google News RSS, Bing News RSS, and DuckDuckGo Instant Answer where applicable.
+- News/current-affairs queries are detected by terms such as `latest`, `current`, `today`, `recent`, `news`, and `politics`.
+- Search results are injected as external evidence, not as trusted instructions.
+
+### Uploads And File Understanding
+
+- Image uploads are analyzed with Gemini vision keys from `GEMINI_VISION_API_KEYS` or fallback vision settings.
+- PDF uploads are parsed with `pypdf`; page and size limits come from the active plan.
+- Audio uploads are transcribed first, then the transcript is routed like a normal user message.
+- Attachment text is wrapped as untrusted external context before reaching the LLM. This protects the agent from instructions hidden inside PDFs, images, transcripts, or web snippets.
+
+### Gmail Automation
+
+- Gmail OAuth starts at `GET /api/oauth/google/start` and returns through `GET /api/oauth/google/callback`.
+- Credentials are saved per Firebase user in Supabase `user_credentials`.
+- Gmail execution is delegated to n8n through `N8N_BASE_URL` and the Gmail workflow path.
+- Backend calls to n8n include `x-user-id` and, in production, should include `x-agentcoolie-secret`.
+- Gmail actions are planned deterministically for common list/search/send flows before n8n is called.
+- High-risk Gmail actions such as send, reply, delete, label changes, and read/unread changes require confirmation before execution.
+- The confirmation draft is stored in Redis as chat-scoped pending tool state, so a confirmation in one chat does not apply to another chat.
+
+### Tasks And Reminders
+
+- Users can create tasks from chat, WhatsApp, or the Tasks page.
+- Supported task categories include normal reminders, Gmail tasks, YouTube opens, website opens, and call-reminder tasks.
+- Supabase `tasks` stores task status, due date, execution message, priority, metadata, and completion state.
+- Backend-executable tasks are claimed by the FastAPI scheduler with execution metadata before side effects run.
+- Browser-only actions are left for the frontend runner because the backend cannot open a user's browser tab.
+- If a browser-only task is due while the app is closed, the frontend can mark it `missed_offline`.
+
+### WhatsApp Access
+
+- WhatsApp access is account-linked by phone number.
+- Users save a number in Settings, then verify it by sending `LINK 123456` from the same WhatsApp number.
+- Incoming Twilio WhatsApp messages are mapped to the verified Firebase user through Supabase `user_credentials`.
+- Free/Companion users cannot use WhatsApp because the quota is zero; Autopilot users get the configured monthly allowance.
+
+### Phone Call Reminders
+
+- Important tasks can request `notify_by_call`.
+- Twilio places a task-specific voice call using a Tenglish reminder message.
+- Trial-account Twilio errors such as unverified recipient numbers are converted into user-friendly task errors.
+- Call reminder phone numbers are stored per user in Supabase `user_credentials`.
+
+### Plans, Quotas, And Demo Billing
+
+- Companion and Autopilot limits are enforced on the backend in `plan_service.py`.
+- Frontend checks are for UX only; the backend is the source of truth.
+- Usage is recorded in Supabase `usage_events`.
+- Demo checkout can activate Autopilot without real payment only when `DEMO_BILLING_ENABLED=true`.
+- Real payment is not implemented yet. Replace demo billing with Stripe, Razorpay, or another provider before charging users.
+
+### Safety, Guardrails, And Auditability
+
+- External content from search, PDFs, images, audio transcripts, and uploaded files is wrapped as untrusted context.
+- The system prompt tells the LLM not to follow instructions inside external content blocks.
+- High-risk Gmail actions require explicit user confirmation.
+- Server-side task execution uses leases so stuck `calling` tasks can be recovered.
+- Redacted tool audit events are written to `usage_events` with `feature = "tool_audit"` for Gmail, n8n, Twilio calls, and stale task recovery.
+- Audit metadata redacts secrets and shrinks long message bodies into previews plus short hashes, so debugging is possible without storing full sensitive payloads in logs.
+
 ## Plans And Pricing
 
 AgentCoolie has two product modes:
@@ -89,8 +172,10 @@ flowchart LR
   Backend --> Search["SerpAPI / DuckDuckGo / RSS"]
   Backend --> Twilio["Twilio Voice and WhatsApp"]
   Backend --> N8N["n8n Gmail workflow"]
+  Backend --> Audit["Redacted tool audit events"]
   N8N --> Gmail["Gmail API"]
   N8N --> Supabase
+  Audit --> Supabase
 ```
 
 ## Request Flow
@@ -113,6 +198,7 @@ sequenceDiagram
   R->>M: Load chat-scoped short memory and pending tool state
   R->>DB: Load preferences and long-term memories
   R->>T: Run Gmail, task, search, website, or YouTube tool when needed
+  R->>DB: Write redacted tool audit events for side effects
   R->>L: Ask LLM for general responses
   R->>M: Save latest exchange for this chat only
   R->>DB: Persist chat and important long-term memory
@@ -144,6 +230,14 @@ flowchart TD
 ```
 
 This setup is simple and works for a small Railway deployment. If the app grows to many replicas or needs guaranteed delayed jobs, move this runner to Celery, RQ, Dramatiq, or a managed queue. Both execution paths reduce duplicate execution by claiming tasks with `status = pending` before running side effects.
+
+Task execution reliability details:
+
+- Backend/manual executions write `metadata.execution_scope`, `execution_attempt`, `execution_claimed_at`, and `execution_lease_seconds`.
+- `TASK_EXECUTION_LEASE_SECONDS` controls how long a backend/manual `calling` task can stay claimed before recovery.
+- Stale backend/manual `calling` tasks are marked `failed` instead of retried automatically. This avoids duplicate side effects such as sending the same email or placing the same call twice.
+- Browser actions use `execution_scope = browser_action_required`, so stale recovery does not incorrectly fail YouTube or website tasks that are waiting for the frontend.
+- Completed and failed backend executions keep execution metadata for debugging.
 
 ## Memory Model
 
@@ -179,7 +273,7 @@ Deleting or clearing a chat deletes that chat's Redis memory and pending tool st
 | Supabase `user_credentials` | Gmail, WhatsApp, and call reminder connection data |
 | Supabase `app_secrets` | Runtime provider credentials that can change without redeploy |
 | Supabase `user_plans` | Companion/Autopilot account mode and billing metadata |
-| Supabase `usage_events` | Daily/monthly feature usage accounting |
+| Supabase `usage_events` | Daily/monthly feature usage accounting and redacted `tool_audit` events |
 | Redis | Last N exchanges per chat and pending multi-turn tool state |
 
 ## External Services
@@ -253,6 +347,7 @@ OAUTH_STATE_MAX_AGE_SECONDS=600
 DEMO_BILLING_ENABLED=false
 MAX_ATTACHMENT_COUNT=4
 MAX_UPLOAD_BYTES=26214400
+TASK_EXECUTION_LEASE_SECONDS=300
 ```
 
 `SESSION_SECRET_KEY` must be a strong stable value in production. Gmail OAuth state is signed with this secret and expires after `OAUTH_STATE_MAX_AGE_SECONDS`.
@@ -287,6 +382,7 @@ Run SQL files in `backend/sql/`:
 
 The backend uses the Supabase service role key, so route-level ownership checks are mandatory. User-facing task, preference, credential, and memory routes scope every read/write by Firebase UID.
 `plans_and_usage.sql` also installs the `consume_usage_quota` RPC, which checks limits and inserts usage inside one Postgres transaction. Re-run it after pulling billing changes.
+Tool audit events do not require a separate migration; they are stored in `usage_events` with `feature = 'tool_audit'`.
 
 Never expose the service role key in frontend code.
 
@@ -307,6 +403,14 @@ x-agentcoolie-secret: <N8N_TOOL_SECRET>
 ```
 
 Your n8n workflow should reject requests where `x-agentcoolie-secret` does not match its own environment variable.
+
+Gmail safety behavior:
+
+- List/search actions can run directly when Gmail is connected and the plan allows Gmail reads.
+- Send/reply/delete/label actions are considered high-risk and require a confirmation turn.
+- The agent shows the drafted recipient, subject, and body, then waits for `send` or `confirm`.
+- `cancel` deletes the pending Redis state and does not call n8n.
+- Every started/completed Gmail workflow writes a redacted `tool_audit` event.
 
 ## WhatsApp Linking
 
@@ -335,6 +439,31 @@ The status callback URL is optional unless you want delivery analytics.
 | `sent` | Action completed or reminder delivered |
 | `failed` | Tool/provider failed; see `execution_message` |
 | `missed_offline` | Browser-only task was due while the user device was closed/offline |
+
+## Tool Audit Events
+
+Tool audit events are stored in `usage_events` so they can be inspected without adding a new table.
+
+| Metadata Field | Meaning |
+| --- | --- |
+| `tool` | Tool family, for example `gmail`, `call_reminder`, or `task_scheduler` |
+| `action` | Action name, for example `send`, `place_call`, or task type |
+| `stage` | Lifecycle stage such as `confirmation_requested`, `started`, `completed`, or `stale_lease_recovered` |
+| `status` | Human-readable state such as `pending`, `success`, `failed`, `cancelled`, or `confirmed` |
+| `metadata` | Sanitized payload preview, provider status, task id, conversation id, or failure reason |
+
+The audit service is best-effort. If Supabase is temporarily unreachable, the action is not blocked only because the audit write failed.
+
+Useful SQL:
+
+```sql
+select occurred_at, metadata
+from public.usage_events
+where user_id = 'firebase_uid_here'
+  and feature = 'tool_audit'
+order by occurred_at desc
+limit 50;
+```
 
 ## Local Development
 
@@ -397,6 +526,7 @@ After deployment, check:
 
 ```powershell
 python -m compileall backend\app
+python backend\test_imports.py
 npm run build
 ```
 

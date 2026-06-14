@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.core.config import settings
@@ -12,6 +12,7 @@ from app.services.call_reminder_service import call_reminder_service
 from app.services.plan_service import plan_service
 from app.services.supabase_service import is_connectivity_error, supabase_service
 from app.services.task_execution_service import execute_gmail_task
+from app.services.tool_audit_service import tool_audit_service
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ class CallTaskScheduler:
                 continue
 
     async def run_once(self) -> None:
+        await self._recover_stale_claimed_tasks()
         try:
             due_tasks = await supabase_service.get_due_pending_tasks(limit=25)
         except Exception as e:
@@ -76,6 +78,59 @@ class CallTaskScheduler:
                 continue
             await self._process_task(task)
 
+    async def _recover_stale_claimed_tasks(self) -> None:
+        lease_seconds = max(60, int(settings.TASK_EXECUTION_LEASE_SECONDS or 300))
+        older_than = (datetime.now(timezone.utc) - timedelta(seconds=lease_seconds)).isoformat()
+        try:
+            stale_tasks = await supabase_service.get_stale_claimed_tasks(
+                older_than,
+                limit=25,
+                execution_scopes=["backend_scheduler", "manual_execute"],
+            )
+        except Exception as e:
+            if is_connectivity_error(e):
+                logger.warning("Skipping stale execution recovery because Supabase is unreachable")
+                return
+            raise
+
+        for task in stale_tasks:
+            task_id = str(task.get("id") or "")
+            user_id = str(task.get("user_id") or "")
+            if not task_id or not user_id:
+                continue
+            metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+            execution_scope = metadata.get("execution_scope") or "unknown"
+            message = (
+                "Task execution did not finish before its safety lease expired. "
+                "AgentCoolie marked it failed to avoid duplicate side effects. Please retry manually if needed."
+            )
+            try:
+                await supabase_service.update_task(
+                    task_id,
+                    user_id=user_id,
+                    status="failed",
+                    completed=False,
+                    execution_message=message,
+                    last_attempt_at=datetime.now(timezone.utc).isoformat(),
+                    metadata={
+                        **metadata,
+                        "execution_scope": execution_scope,
+                        "execution_stale_recovered": True,
+                        "execution_stale_recovered_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+                await tool_audit_service.record(
+                    user_id,
+                    tool="task_scheduler",
+                    action=str(task.get("type") or "general"),
+                    stage="stale_lease_recovered",
+                    status="failed",
+                    metadata={"task_id": task_id, "execution_scope": execution_scope},
+                )
+                logger.warning("Recovered stale claimed task %s for user %s", task_id, user_id)
+            except Exception as e:
+                logger.warning("Failed to recover stale claimed task %s: %s", task_id, e)
+
     async def _process_task(self, task: dict[str, Any]) -> None:
         task_id = str(task.get("id") or "")
         user_id = str(task.get("user_id") or "")
@@ -87,6 +142,15 @@ class CallTaskScheduler:
         task_type = str(task.get("type") or "general")
         wants_call = call_reminder_service.task_wants_call(task)
         claim_message = "Call reminder is being placed." if wants_call else "Task is being executed by AgentCoolie."
+        attempt_count = int(metadata.get("execution_attempt") or 0) + 1
+        claim_metadata = {
+            **metadata,
+            "execution_scope": "backend_scheduler",
+            "execution_attempt": attempt_count,
+            "execution_claimed_at": now_iso,
+            "execution_lease_seconds": max(60, int(settings.TASK_EXECUTION_LEASE_SECONDS or 300)),
+        }
+        active_metadata = claim_metadata
 
         try:
             claimed = await supabase_service.claim_pending_task(
@@ -96,6 +160,7 @@ class CallTaskScheduler:
                 completed=False,
                 execution_message=claim_message,
                 last_attempt_at=now_iso,
+                metadata=claim_metadata,
             )
             if not claimed:
                 return
@@ -106,7 +171,8 @@ class CallTaskScheduler:
                 metadata={"source": "backend_scheduler", "task_type": task_type, "task_id": task_id},
             )
             call_result = None
-            updated_metadata = dict(metadata)
+            updated_metadata = dict(claimed.get("metadata") if isinstance(claimed.get("metadata"), dict) else claim_metadata)
+            active_metadata = updated_metadata
             execution_parts: list[str] = []
             if call_reminder_service.task_wants_call(task) and metadata.get("call_status") != "placed":
                 call_result = await call_reminder_service.place_task_call(task)
@@ -117,6 +183,7 @@ class CallTaskScheduler:
                     "call_attempted_at": call_result.get("called_at"),
                     "call_message": call_result.get("message"),
                 }
+                active_metadata = updated_metadata
                 execution_parts.append(f"Call reminder placed: {call_result.get('message')}")
 
             if task_type == "gmail":
@@ -133,7 +200,7 @@ class CallTaskScheduler:
                     completed=False,
                     execution_message=" ".join(execution_parts) or "Waiting for the browser to open this task.",
                     last_attempt_at=datetime.now(timezone.utc).isoformat(),
-                    metadata=updated_metadata,
+                    metadata={**updated_metadata, "execution_scope": "browser_action_required"},
                 )
                 logger.info(f"Placed call side-effect for browser task {task_id}")
                 return
@@ -148,7 +215,11 @@ class CallTaskScheduler:
                 completed=True,
                 execution_message=execution_message[:500],
                 last_attempt_at=datetime.now(timezone.utc).isoformat(),
-                metadata=updated_metadata,
+                metadata={
+                    **updated_metadata,
+                    "execution_scope": "completed",
+                    "execution_completed_at": datetime.now(timezone.utc).isoformat(),
+                },
             )
             logger.info(f"Placed call reminder for task {task_id}")
 
@@ -162,7 +233,12 @@ class CallTaskScheduler:
                 completed=False,
                 execution_message=error_message,
                 last_attempt_at=datetime.now(timezone.utc).isoformat(),
-                metadata={**metadata, "call_status": "failed", "call_error": error_message},
+                metadata={
+                    **active_metadata,
+                    "execution_scope": "failed",
+                    "call_status": "failed",
+                    "call_error": error_message,
+                },
             )
 
 

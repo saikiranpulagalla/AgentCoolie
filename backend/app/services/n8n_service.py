@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.services.plan_service import plan_service
 from app.services.runtime_config_service import runtime_config_service
 from app.services.supabase_service import is_connectivity_error, supabase_service
+from app.services.tool_audit_service import tool_audit_service
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +155,14 @@ class N8NService:
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not await supabase_service.get_credentials(user_id, "gmail"):
+            await tool_audit_service.record(
+                user_id,
+                tool="gmail",
+                action=action or "unknown",
+                stage="blocked",
+                status="not_connected",
+                metadata={"reason": "missing_gmail_credentials"},
+            )
             return {
                 "ok": False,
                 "status": 409,
@@ -164,6 +173,14 @@ class N8NService:
         if not action:
             action, planned_payload, planner_message = self.plan_gmail_action(message)
             if not action:
+                await tool_audit_service.record(
+                    user_id,
+                    tool="gmail",
+                    action="plan",
+                    stage="blocked",
+                    status="planner_error",
+                    metadata={"message": message, "planner_message": planner_message},
+                )
                 return {
                     "ok": False,
                     "status": 400,
@@ -181,6 +198,14 @@ class N8NService:
             metadata={"source": "n8n_gmail", "action": action},
         )
 
+        await tool_audit_service.record(
+            user_id,
+            tool="gmail",
+            action=action,
+            stage="started",
+            status="pending",
+            metadata={"feature": feature, "payload": planned_payload},
+        )
         result = await self._post(
             "N8N_GMAIL_ACTION_PATH",
             {
@@ -192,6 +217,18 @@ class N8NService:
         )
         result["action"] = action
         result["payload"] = planned_payload
+        await tool_audit_service.record(
+            user_id,
+            tool="gmail",
+            action=action,
+            stage="completed",
+            status="success" if result.get("ok") else "failed",
+            metadata={
+                "provider_status": result.get("status"),
+                "body": result.get("body"),
+                "message": result.get("message"),
+            },
+        )
         return result
 
     async def gmail_status(self, user_id: str) -> dict[str, Any]:

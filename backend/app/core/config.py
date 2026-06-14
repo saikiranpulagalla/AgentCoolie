@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     TWILIO_WHATSAPP_FROM: Optional[str] = None
     TWILIO_VALIDATE_WEBHOOK_SIGNATURE: bool = True
     CALL_REMINDER_POLL_INTERVAL_SECONDS: int = 30
+    TASK_EXECUTION_LEASE_SECONDS: int = 300
 
     # Webhooks
     WHATSAPP_VERIFY_TOKEN: Optional[str] = None

@@ -401,6 +401,40 @@ class SupabaseService:
             logger.error(f"Failed to get due pending tasks: {e}")
             raise
 
+    async def get_stale_claimed_tasks(
+        self,
+        older_than_iso: str,
+        limit: int = 50,
+        execution_scopes: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Get claimed backend/manual tasks whose execution lease appears stale."""
+        scopes = execution_scopes or ["backend_scheduler", "manual_execute"]
+        try:
+            def _get_for_scope(scope: str):
+                return (
+                    self.client.table("tasks")
+                    .select("*")
+                    .eq("status", "calling")
+                    .lte("last_attempt_at", older_than_iso)
+                    .contains("metadata", {"execution_scope": scope})
+                    .order("last_attempt_at", desc=False)
+                    .limit(limit)
+                    .execute()
+                )
+
+            rows: List[Dict[str, Any]] = []
+            for scope in scopes:
+                response = await asyncio.to_thread(_get_for_scope, scope)
+                for row in response.data or []:
+                    if row not in rows:
+                        rows.append(row)
+                    if len(rows) >= limit:
+                        return rows
+            return rows
+        except Exception as e:
+            logger.error(f"Failed to get stale claimed tasks: {e}")
+            raise
+
     async def get_task(self, task_id: str, user_id: str) -> Optional[Dict[str, Any]]:
         """Get a single task scoped to a user."""
         try:
