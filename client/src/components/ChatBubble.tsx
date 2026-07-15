@@ -2,6 +2,7 @@ import { cn } from "@/lib/utils";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Bot, User } from "lucide-react";
 import type { ChatMessage } from "@shared/schema";
+import { safeAttachmentUrl, safeExternalUrl } from "@/lib/safeExternalUrl";
 
 interface ChatBubbleProps {
   message: ChatMessage;
@@ -77,26 +78,32 @@ export function ChatBubble({ message, userName, userAvatar }: ChatBubbleProps) {
               </div>
             {message.attachments && message.attachments.length > 0 && (
               <div className="mt-3 grid grid-cols-1 gap-2">
-                {message.attachments.map((a, i) => (
-                  <div key={i} className="flex items-center gap-3">
-                    {a.mime.startsWith('image/') ? (
-                      <img src={a.url} alt={a.name} className="h-24 w-24 object-cover rounded-md border" />
-                    ) : a.mime === 'application/pdf' ? (
-                      <a href={a.url} target="_blank" rel="noreferrer" className="text-sm underline">
-                        {a.name}
-                      </a>
-                    ) : a.mime.startsWith('audio/') ? (
-                      <div className="flex items-center gap-2">
-                        <audio controls src={a.url} className="max-w-[260px]" />
-                        <span className="text-xs text-muted-foreground">{a.name}</span>
-                      </div>
-                    ) : (
-                      <a href={a.url} target="_blank" rel="noreferrer" className="text-sm underline">
-                        {a.name}
-                      </a>
-                    )}
-                  </div>
-                ))}
+                {message.attachments.map((a, i) => {
+                  const attachmentUrl = safeAttachmentUrl(a.url, a.mime);
+                  if (!attachmentUrl) {
+                    return <span key={i} className="text-sm text-muted-foreground">{a.name}</span>;
+                  }
+                  return (
+                    <div key={i} className="flex items-center gap-3">
+                      {a.mime.startsWith('image/') ? (
+                        <img src={attachmentUrl} alt={a.name} className="h-24 w-24 object-cover rounded-md border" />
+                      ) : a.mime === 'application/pdf' ? (
+                        <a href={attachmentUrl} target="_blank" rel="noopener noreferrer" className="text-sm underline">
+                          {a.name}
+                        </a>
+                      ) : a.mime.startsWith('audio/') ? (
+                        <div className="flex items-center gap-2">
+                          <audio controls src={attachmentUrl} className="max-w-[260px]" />
+                          <span className="text-xs text-muted-foreground">{a.name}</span>
+                        </div>
+                      ) : (
+                        <a href={attachmentUrl} target="_blank" rel="noopener noreferrer" className="text-sm underline">
+                          {a.name}
+                        </a>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -270,16 +277,19 @@ function MarkdownHTML({ html }: { html: string }) {
 
     if (match[0].startsWith('<a')) {
       // Link
+      const href = safeExternalUrl(match[3], true);
       parts.push(
-        <a
-          key={`link-${parts.length}`}
-          href={match[3]}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-primary underline hover:text-primary/80"
-        >
-          {match[4]}
-        </a>
+        href ? (
+          <a
+            key={`link-${parts.length}`}
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-primary underline hover:text-primary/80"
+          >
+            {match[4]}
+          </a>
+        ) : <span key={`link-${parts.length}`}>{match[4]}</span>
       );
     } else if (match[1] === 'strong') {
       // Bold

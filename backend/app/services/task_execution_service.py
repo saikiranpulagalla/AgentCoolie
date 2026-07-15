@@ -16,9 +16,15 @@ def _valid_email(value: str | None) -> str | None:
 
 
 async def execute_gmail_task(user_id: str, task: dict[str, Any]) -> dict[str, Any]:
-    """Execute a persisted Gmail task using metadata captured at creation time."""
+    """Execute only a previously approved, structured Gmail send task."""
     message = str(task.get("description") or task.get("title") or "").strip()
     metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+
+    if metadata.get("gmail_action") != "send" or not metadata.get("gmail_approved_at"):
+        raise RuntimeError(
+            "This scheduled Gmail task has no approved structured email payload. "
+            "Create it again through the AgentCoolie chat confirmation flow."
+        )
 
     tool_status = await n8n_service.gmail_status(user_id)
     if not tool_status.get("configured"):
@@ -29,20 +35,19 @@ async def execute_gmail_task(user_id: str, task: dict[str, Any]) -> dict[str, An
         raise RuntimeError("Gmail is not connected. Connect Gmail in Settings first.")
 
     gmail_to = _valid_email(metadata.get("gmail_to"))
-    if gmail_to:
-        body = str(metadata.get("gmail_body") or message).strip()
-        result = await n8n_service.run_gmail_action(
-            user_id,
-            message,
-            action="send",
-            payload={
-                "to": gmail_to,
-                "subject": metadata.get("gmail_subject") or "Message from AgentCoolie",
-                "body": body,
-            },
-        )
-    else:
-        result = await n8n_service.run_gmail_action(user_id, message)
+    body = str(metadata.get("gmail_body") or "").strip()
+    subject = str(metadata.get("gmail_subject") or "Message from AgentCoolie").strip()
+    if not gmail_to or not body:
+        raise RuntimeError("This scheduled Gmail task is missing a valid recipient or email body.")
+    if len(subject) > 180 or len(body) > 10000:
+        raise RuntimeError("This scheduled Gmail task exceeds email size limits.")
+
+    result = await n8n_service.run_gmail_action(
+        user_id,
+        message,
+        action="send",
+        payload={"to": gmail_to, "subject": subject, "body": body},
+    )
 
     if not result.get("ok"):
         raise RuntimeError(str(result.get("message") or result.get("body") or "Gmail workflow failed."))

@@ -52,11 +52,12 @@ This repository contains the production frontend, backend API, SQL schema files,
 ### Gmail Automation
 
 - Gmail OAuth starts at `GET /api/oauth/google/start` and returns through `GET /api/oauth/google/callback`.
+- OAuth uses PKCE plus Redis-backed, single-use state. Gmail connection therefore requires Redis to be healthy.
 - Credentials are saved per Firebase user in Supabase `user_credentials`.
 - Gmail execution is delegated to n8n through `N8N_BASE_URL` and the Gmail workflow path.
 - Backend calls to n8n include `x-user-id` and, in production, should include `x-agentcoolie-secret`.
 - Gmail actions are planned deterministically for common list/search/send flows before n8n is called.
-- High-risk Gmail actions such as send, reply, delete, label changes, and read/unread changes require confirmation before execution.
+- High-risk Gmail actions such as send, reply, delete, label changes, and read/unread changes require confirmation before execution. Raw browser calls to n8n are disabled.
 - The confirmation draft is stored in Redis as chat-scoped pending tool state, so a confirmation in one chat does not apply to another chat.
 
 ### Tasks And Reminders
@@ -64,7 +65,7 @@ This repository contains the production frontend, backend API, SQL schema files,
 - Users can create tasks from chat, WhatsApp, or the Tasks page.
 - Supported task categories include normal reminders, Gmail tasks, YouTube opens, website opens, and call-reminder tasks.
 - Supabase `tasks` stores task status, due date, execution message, priority, metadata, and completion state.
-- Backend-executable tasks are claimed by the FastAPI scheduler with execution metadata before side effects run.
+- Backend-executable tasks are claimed by the FastAPI scheduler with execution metadata before side effects run. The scheduler queries only Gmail/call work so browser-only backlog cannot starve delivery work.
 - Browser-only actions are left for the frontend runner because the backend cannot open a user's browser tab.
 - If a browser-only task is due while the app is closed, the frontend can mark it `missed_offline`.
 
@@ -93,45 +94,14 @@ This repository contains the production frontend, backend API, SQL schema files,
 ### Safety, Guardrails, And Auditability
 
 - External content from search, PDFs, images, audio transcripts, and uploaded files is wrapped as untrusted context.
+- Provider safety refusals do not fall back to a different AI provider. Only transient/key failures can use Groq fallback.
+- External links are validated in both backend and frontend before AgentCoolie renders or opens them.
+- Twilio inbound events are signature-checked and deduplicated by provider message id before the agent runs.
 - The system prompt tells the LLM not to follow instructions inside external content blocks.
 - High-risk Gmail actions require explicit user confirmation.
 - Server-side task execution uses leases so stuck `calling` tasks can be recovered.
 - Redacted tool audit events are written to `usage_events` with `feature = "tool_audit"` for Gmail, n8n, Twilio calls, and stale task recovery.
 - Audit metadata redacts secrets and shrinks long message bodies into previews plus short hashes, so debugging is possible without storing full sensitive payloads in logs.
-
-## Plans And Pricing
-
-AgentCoolie has two product modes:
-
-| Capability | AgentCoolie Companion | AgentCoolie Autopilot |
-| --- | ---: | ---: |
-| Price | Free | Rs. 499/month or $6/month |
-| AI chat messages | 15/day, 150/month | 60/day, 1,000/month |
-| Active chats | 5 | 30 |
-| Chat history retention | 7 days | 90 days |
-| Short-term memory | Last 4 turns/chat | Last 15 turns/chat |
-| Long-term memories | 15 total | 200 total |
-| New long-term memories | 3/month | 50/month |
-| Web searches | 3/day, 25/month | 20/day, 250/month |
-| Active tasks/reminders | 5 | 75 |
-| Task creation | 3/day, 25/month | 30/day, 300/month |
-| Automated task executions | 1/day, 10/month | 15/day, 200/month |
-| Critical call tasks | 1 active | 10 active |
-| Gmail draft generation | Not included | 100/month |
-| Gmail send/reply | Not included | 50/month |
-| Gmail search/read | Not included | 100/month |
-| WhatsApp messages | Not included | 250/month |
-| Call reminders | 1/month | 10/month |
-| Max call message | 10 seconds target | 25 seconds target |
-| Image uploads | 1/day, 10/month, 3 MB | 15/day, 200/month, 10 MB |
-| PDF uploads | 1/day, 5/month, 3 MB, 2 pages | 5/day, 75/month, 15 MB, 25 pages |
-| Audio uploads | 1/day, 10/month, 30 seconds, 3 MB | 10/day, 100/month, 5 minutes, 25 MB |
-| YouTube open actions | 5/day, 50/month | 50/day, 500/month |
-| Website open actions | 5/day, 50/month | 50/day, 500/month |
-| Tool retries | 0 | 2 |
-
-Plan enforcement lives on the backend in `backend/app/services/plan_service.py`. The frontend displays the current mode, but it is not trusted for paid-feature enforcement.
-Checkout is currently a demo flow, not a real payment provider. The landing page links to `/checkout`; clicking **Pay and Activate Autopilot** calls `POST /api/billing/demo-upgrade`, writes `autopilot` to Supabase `user_plans`, and shows a success screen when `DEMO_BILLING_ENABLED=true`. Keep that flag off in real production and replace the endpoint with Stripe/Razorpay before collecting real money.
 
 ## Repository Layout
 
@@ -301,7 +271,7 @@ ENV=production
 HOST=0.0.0.0
 PORT=8000
 FRONTEND_URL=https://agentcoolie.web.app
-CORS_ORIGINS=["https://agentcoolie.web.app","http://localhost:5173"]
+CORS_ORIGINS=["https://agentcoolie.web.app"]
 
 FIREBASE_PROJECT_ID=...
 FIREBASE_SERVICE_ACCOUNT_JSON=...
@@ -309,7 +279,7 @@ FIREBASE_SERVICE_ACCOUNT_JSON=...
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=...
 
-REDIS_URL=redis://default:...@host:port
+REDIS_URL=rediss://default:...@host:port
 REDIS_MEMORY_CONTEXT_EXCHANGES=5
 REDIS_MEMORY_MAX_MESSAGES=30
 REDIS_MEMORY_TTL_SECONDS=86400
@@ -332,32 +302,39 @@ TWILIO_AUTH_TOKEN=...
 TWILIO_FROM_NUMBER=+1...
 TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
 TWILIO_VALIDATE_WEBHOOK_SIGNATURE=true
+WHATSAPP_VERIFICATION_TTL_MINUTES=15
+WHATSAPP_VERIFICATION_RESEND_SECONDS=60
+WEBHOOK_IDEMPOTENCY_TTL_SECONDS=86400
 
 N8N_BASE_URL=https://your-n8n-host
 N8N_GMAIL_ACTION_PATH=/webhook/gmail-action
-N8N_GMAIL_CREDENTIALS_PATH=/webhook/save-gmail-credentials
 N8N_TOOL_SECRET=use-a-long-random-secret
 
-LANGSMITH_TRACING=true
+LANGSMITH_TRACING=false
 LANGSMITH_API_KEY=...
 LANGSMITH_PROJECT=agentcoolie-production
 
 SESSION_SECRET_KEY=use-a-long-random-secret
 OAUTH_STATE_MAX_AGE_SECONDS=600
+ALLOW_DEV_OAUTH_UID_FALLBACK=false
 DEMO_BILLING_ENABLED=false
 MAX_ATTACHMENT_COUNT=4
-MAX_UPLOAD_BYTES=26214400
+MAX_UPLOAD_BYTES=10485760
+MAX_CHAT_MESSAGE_CHARS=12000
+MAX_ATTACHMENT_CONTEXT_CHARS=60000
+MAX_IMAGE_PIXELS=40000000
+AI_REQUEST_TIMEOUT_SECONDS=60
 TASK_EXECUTION_LEASE_SECONDS=300
 ```
 
-`SESSION_SECRET_KEY` must be a strong stable value in production. Gmail OAuth state is signed with this secret and expires after `OAUTH_STATE_MAX_AGE_SECONDS`.
+`SESSION_SECRET_KEY` must be a strong stable value in production. Gmail OAuth state is HMAC-signed, PKCE-bound, kept server-side in Redis, and expires after `OAUTH_STATE_MAX_AGE_SECONDS`. Production-like environments fail startup unless debug is off, Redis uses `rediss://`, CORS uses HTTPS, signed Twilio webhooks are enabled, and demo billing is disabled.
 
 Runtime key rotation can be managed without redeploy by writing JSON arrays to `app_secrets`, for example `GOOGLE_AI_API_KEYS`, `GEMINI_VISION_API_KEYS`, and `GROQ_API_KEYS`. Gemini vision/audio requests use the vision pool first because Groq is text-only in this app.
 Set `DEMO_BILLING_ENABLED=true` only for demo deployments where the fake checkout should activate Autopilot without real payment.
 
 ## Frontend Environment
 
-Set these before building the React app.
+Set these before building the React app. A production build fails when `VITE_API_URL` is missing or not HTTPS, preventing Firebase bearer tokens from accidentally being sent to a local process.
 
 ```env
 VITE_API_URL=https://your-backend.up.railway.app
@@ -411,6 +388,7 @@ Gmail safety behavior:
 - The agent shows the drafted recipient, subject, and body, then waits for `send` or `confirm`.
 - `cancel` deletes the pending Redis state and does not call n8n.
 - Every started/completed Gmail workflow writes a redacted `tool_audit` event.
+- Scheduled Gmail sends persist an approved recipient, subject, and body. Unstructured legacy Gmail tasks fail safely instead of asking n8n to reinterpret text at execution time.
 
 ## WhatsApp Linking
 
@@ -514,13 +492,15 @@ npm run build
 
 After deployment, check:
 
-1. `/health` returns `healthy` and includes dependency `checks`; `degraded` means auth or Supabase configuration needs attention.
+1. `/health` returns `healthy`; dependency details are intentionally limited outside local development.
 2. Firebase authorized domains include the deployed hosting domain.
 3. Backend `CORS_ORIGINS` includes the deployed frontend URL.
 4. Google OAuth redirect URI matches the backend callback URL exactly.
 5. Twilio WhatsApp inbound URL points to `/api/whatsapp/twilio-webhook`.
 6. n8n has `N8N_TOOL_SECRET` and rejects requests without it.
 7. Supabase SQL migrations have been applied.
+8. Railway has `REDIS_URL=rediss://...`; OAuth and webhook deduplication intentionally fail closed without it.
+9. Any developer-only inspection service is private-network-only, disabled by default, and protected by organization access controls rather than a browser-stored token.
 
 ## Verification
 
@@ -541,6 +521,7 @@ rg -n "api/gmail/oauth|unauthorized-domain|CORS" backend client README.md
 
 - Rotate secrets that were pasted into chats, terminals, screenshots, or docs.
 - Keep `.env`, `.env.local`, and service-account JSON files out of git. This repo ignores `.env`, `.env.local`, and environment-specific local files.
+- Never put `SUPABASE_SERVICE_ROLE_KEY`, OAuth refresh tokens, Firebase admin credentials, Twilio credentials, or provider API keys under `client/` or in a `VITE_*` variable.
 - Prefer adding provider credentials to `app_secrets` for runtime changes that should not require a redeploy.
 - Browser popup behavior differs by browser. The frontend now treats a null `window.open` result as unknown instead of claiming the tab was blocked.
 - Browser-only actions require the user device to be online and the app to be open.

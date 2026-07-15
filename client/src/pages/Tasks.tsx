@@ -8,6 +8,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { useNotification } from "@/contexts/NotificationContext";
 import { apiFetch, apiUrl } from "@/lib/api";
+import { safeExternalUrl } from "@/lib/safeExternalUrl";
 import {
   AlertDialog,
   AlertDialogContent,
@@ -355,14 +356,16 @@ export default function Tasks() {
   };
 
   const openUrlInNewTab = (url: string, preOpenedWindow?: Window | null): boolean => {
+    const safeUrl = safeExternalUrl(url);
+    if (!safeUrl) return false;
     try {
       if (preOpenedWindow && !preOpenedWindow.closed) {
         try { preOpenedWindow.opener = null; } catch (e) {}
-        preOpenedWindow.location.href = url;
+        preOpenedWindow.location.href = safeUrl;
         try { preOpenedWindow.focus(); } catch (e) {}
         return true;
       }
-      const w = window.open(url, '_blank');
+      const w = window.open(safeUrl, '_blank');
       if (!w) return false;
       try { w.opener = null; } catch (e) {}
       try { w.focus(); } catch (e) {}
@@ -623,7 +626,6 @@ export default function Tasks() {
   const [formDatetime, setFormDatetime] = useState(() => formatForDatetimeLocal(new Date(Date.now() + 60000)));
   const [formEmail, setFormEmail] = useState('');
   const [notifyByCall, setNotifyByCall] = useState(false);
-  const [formCallPhone, setFormCallPhone] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
@@ -639,13 +641,6 @@ export default function Tasks() {
       if (!formEmail) newErrors.email = 'Email is required for Gmail reminders';
       else if (!emailRegex.test(formEmail)) newErrors.email = 'Please provide a valid email address';
     }
-    if (notifyByCall && formCallPhone.trim()) {
-      const phoneRegex = /^\+[1-9]\d{7,14}$/;
-      if (!phoneRegex.test(formCallPhone.trim())) {
-        newErrors.callPhone = 'Call phone must be in E.164 format, e.g. +919000000000';
-      }
-    }
-
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
       return;
@@ -660,7 +655,6 @@ export default function Tasks() {
       if (formType === 'gmail') { payload.user_email = formEmail; }
       if (notifyByCall) {
         payload.notify_by_call = true;
-        if (formCallPhone.trim()) payload.call_phone = formCallPhone.trim();
       }
       const token = await getIdToken();
       const headers: any = { 'Content-Type': 'application/json' };
@@ -686,7 +680,6 @@ export default function Tasks() {
         setFormMessage('');
         setFormEmail('');
         setNotifyByCall(false);
-        setFormCallPhone('');
       } else {
         const errorMessage = data.detail || data.message || res.statusText || 'unknown';
         toast({ title: 'Failed to create reminder', description: errorMessage, variant: 'destructive' });
@@ -826,7 +819,7 @@ export default function Tasks() {
                         Call me when due
                       </Label>
                       <p className="text-xs text-muted-foreground">
-                        Uses your saved call-reminder phone from Settings unless you enter one here.
+                        Uses the call-reminder phone number saved in Settings.
                       </p>
                     </div>
                     <Switch
@@ -835,17 +828,6 @@ export default function Tasks() {
                       onCheckedChange={setNotifyByCall}
                     />
                   </div>
-                  {notifyByCall && (
-                    <div>
-                      <Label>Optional call phone</Label>
-                      <Input
-                        value={formCallPhone}
-                        onChange={(e) => setFormCallPhone(e.target.value)}
-                        placeholder="+919000000000"
-                      />
-                      {errors.callPhone && <p className="text-sm text-destructive mt-1">{errors.callPhone}</p>}
-                    </div>
-                  )}
                 </div>
               </div>
 

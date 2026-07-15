@@ -21,8 +21,42 @@ logger = logging.getLogger(__name__)
 class LongTermMemoryService:
     """Decides which turns deserve durable memory and stores them in Supabase."""
 
+    _HIGH_RISK_SECRET_PATTERNS = [
+        re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b"),
+        re.compile(r"\bgsk_[0-9A-Za-z_-]{20,}\b"),
+        re.compile(r"\bsb_secret_[0-9A-Za-z_-]+\b"),
+        re.compile(r"\bGOCSPX-[0-9A-Za-z_-]+\b"),
+        re.compile(r"\bsk-[0-9A-Za-z_-]{20,}\b"),
+        re.compile(r"\bredis://[^@\s]+@[^ \n\r\t]+", re.IGNORECASE),
+        re.compile(r"\bpostgres(?:ql)?://[^@\s]+@[^ \n\r\t]+", re.IGNORECASE),
+        re.compile(r"\b(?:password|auth token|api key|secret)\s*[:=]\s*\S+", re.IGNORECASE),
+        re.compile(r"\bBearer\s+[0-9A-Za-z._-]{20,}\b", re.IGNORECASE),
+    ]
+
+    _REDACTION_PATTERNS = [
+        (re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE), "[email]"),
+        (re.compile(r"\+?\d[\d\s().-]{7,}\d"), "[phone]"),
+        (re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b"), "[google-api-key]"),
+        (re.compile(r"\bgsk_[0-9A-Za-z_-]{20,}\b"), "[groq-api-key]"),
+        (re.compile(r"\bsb_secret_[0-9A-Za-z_-]+\b"), "[supabase-secret]"),
+        (re.compile(r"\bGOCSPX-[0-9A-Za-z_-]+\b"), "[google-client-secret]"),
+        (re.compile(r"\bsk-[0-9A-Za-z_-]{20,}\b"), "[api-key]"),
+        (re.compile(r"\bredis://[^@\s]+@[^ \n\r\t]+", re.IGNORECASE), "[redis-url]"),
+        (re.compile(r"\bpostgres(?:ql)?://[^@\s]+@[^ \n\r\t]+", re.IGNORECASE), "[database-url]"),
+        (re.compile(r"\bBearer\s+[0-9A-Za-z._-]{20,}\b", re.IGNORECASE), "[bearer-token]"),
+    ]
+
     def _normalize_content(self, content: str) -> str:
         return re.sub(r"\s+", " ", content.strip().lower()).rstrip(".!?")
+
+    def _contains_high_risk_secret(self, text: str) -> bool:
+        return any(pattern.search(text or "") for pattern in self._HIGH_RISK_SECRET_PATTERNS)
+
+    def _redact_sensitive_text(self, text: str) -> str:
+        redacted = text or ""
+        for pattern, replacement in self._REDACTION_PATTERNS:
+            redacted = pattern.sub(replacement, redacted)
+        return redacted
 
     def _extract_json(self, text: str) -> dict[str, Any]:
         try:
@@ -119,8 +153,8 @@ class LongTermMemoryService:
             reason=reason,
             metadata={
                 "normalized_content": normalized_content,
-                "user_message": user_message[:4000],
-                "assistant_response": assistant_response[:4000],
+                "user_message": self._redact_sensitive_text(user_message)[:4000],
+                "assistant_response": self._redact_sensitive_text(assistant_response)[:4000],
             },
         )
 
@@ -168,6 +202,10 @@ class LongTermMemoryService:
 
     async def maybe_save(self, user_id: str, user_message: str, assistant_response: str, source: str = "chat") -> None:
         if not settings.LONG_TERM_MEMORY_ENABLED:
+            return
+
+        if self._contains_high_risk_secret(user_message) or self._contains_high_risk_secret(assistant_response):
+            logger.info("Skipping long-term memory decision because the turn appears to contain a secret")
             return
 
         saved_heuristic: list[str] = []

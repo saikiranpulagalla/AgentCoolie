@@ -401,6 +401,57 @@ class SupabaseService:
             logger.error(f"Failed to get due pending tasks: {e}")
             raise
 
+    async def get_due_backend_executable_tasks(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Return only due work that has a server-side side effect.
+
+        Browser-only reminders are intentionally excluded so a backlog of them
+        cannot starve Gmail deliveries or phone-call reminders.
+        """
+        try:
+            from datetime import datetime, timezone
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+            capped_limit = max(1, int(limit or 1))
+
+            def _gmail_tasks():
+                return (
+                    self.client.table("tasks")
+                    .select("*")
+                    .eq("status", "pending")
+                    .eq("type", "gmail")
+                    .lte("due_date", now_iso)
+                    .order("due_date", desc=False)
+                    .limit(capped_limit)
+                    .execute()
+                )
+
+            def _call_tasks():
+                return (
+                    self.client.table("tasks")
+                    .select("*")
+                    .eq("status", "pending")
+                    .lte("due_date", now_iso)
+                    .contains("metadata", {"notify_by_call": True})
+                    .order("due_date", desc=False)
+                    .limit(capped_limit)
+                    .execute()
+                )
+
+            gmail_response = await asyncio.to_thread(_gmail_tasks)
+            call_response = await asyncio.to_thread(_call_tasks)
+            by_id = {
+                str(row.get("id")): row
+                for row in [*(gmail_response.data or []), *(call_response.data or [])]
+                if row.get("id")
+            }
+            return sorted(
+                by_id.values(),
+                key=lambda row: str(row.get("due_date") or ""),
+            )[:capped_limit]
+        except Exception as e:
+            logger.error(f"Failed to get due backend-executable tasks: {e}")
+            raise
+
     async def get_stale_claimed_tasks(
         self,
         older_than_iso: str,

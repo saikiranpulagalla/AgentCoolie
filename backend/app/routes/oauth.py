@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import logging
+import secrets
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -16,6 +17,7 @@ from fastapi.responses import RedirectResponse
 from app.core.config import settings
 from app.services import firebase_service, plan_service, supabase_service
 from app.services.runtime_config_service import runtime_config_service
+from app.services.redis_memory_service import redis_memory_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/oauth", tags=["oauth"])
@@ -34,7 +36,7 @@ def _frontend_url() -> str:
     if settings.FRONTEND_URL:
         return settings.FRONTEND_URL.rstrip("/")
 
-    if settings.ENV != "development":
+    if settings.is_production():
         for origin in settings.CORS_ORIGINS:
             normalized = origin.rstrip("/")
             if normalized.startswith("https://") and "localhost" not in normalized and "127.0.0.1" not in normalized:
@@ -80,7 +82,7 @@ async def _client_config() -> dict:
 
 def _state_signature(payload: str) -> str:
     secret = settings.SESSION_SECRET_KEY
-    if settings.ENV != "development" and (
+    if settings.is_production() and (
         not secret or secret == "your-secret-key-change-in-production"
     ):
         raise HTTPException(
@@ -94,14 +96,14 @@ def _state_signature(payload: str) -> str:
     ).hexdigest()
 
 
-def _make_state(user_id: str) -> str:
+def _make_state(user_id: str, nonce: str) -> str:
     payload = base64.urlsafe_b64encode(
-        json.dumps({"uid": user_id, "ts": datetime.now(timezone.utc).isoformat()}).encode("utf-8")
+        json.dumps({"uid": user_id, "nonce": nonce, "ts": datetime.now(timezone.utc).isoformat()}).encode("utf-8")
     ).decode("ascii")
     return f"{payload}.{_state_signature(payload)}"
 
 
-def _read_state(state: str) -> str:
+def _read_state(state: str) -> tuple[str, str]:
     try:
         payload, signature = state.split(".", 1)
     except ValueError:
@@ -116,7 +118,8 @@ def _read_state(state: str) -> str:
         raise HTTPException(status_code=400, detail="Invalid OAuth state") from e
 
     user_id = str(data.get("uid") or "").strip()
-    if not user_id:
+    nonce = str(data.get("nonce") or "").strip()
+    if not user_id or len(nonce) < 24:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
 
     try:
@@ -130,7 +133,7 @@ def _read_state(state: str) -> str:
     age_seconds = (datetime.now(timezone.utc) - issued_at.astimezone(timezone.utc)).total_seconds()
     if age_seconds < -60 or age_seconds > max_age:
         raise HTTPException(status_code=400, detail="OAuth state expired")
-    return user_id
+    return user_id, nonce
 
 
 def _user_from_auth_or_dev_uid(authorization: Optional[str], uid: Optional[str]) -> str:
@@ -146,7 +149,7 @@ def _user_from_auth_or_dev_uid(authorization: Optional[str], uid: Optional[str])
         except ValueError as e:
             logger.warning(f"OAuth start auth failed: {e}")
 
-    if settings.ENV == "development" and uid:
+    if settings.is_local_runtime() and settings.ALLOW_DEV_OAUTH_UID_FALLBACK and uid:
         return uid
 
     raise HTTPException(status_code=401, detail="Missing or invalid authorization")
@@ -165,17 +168,32 @@ async def start_google_oauth(
     except ImportError as e:
         raise HTTPException(status_code=500, detail="google-auth-oauthlib is not installed") from e
 
+    nonce = secrets.token_urlsafe(32)
+    code_verifier = secrets.token_urlsafe(64)
+    state = _make_state(user_id, nonce)
+    saved = await redis_memory_service.set_state(
+        user_id,
+        f"oauth_google:{nonce}",
+        {"nonce": nonce, "code_verifier": code_verifier},
+        ttl_seconds=max(60, int(settings.OAUTH_STATE_MAX_AGE_SECONDS or 600)),
+    )
+    if not saved:
+        raise HTTPException(
+            status_code=503,
+            detail="Secure OAuth state storage is unavailable. Check Redis and try again.",
+        )
+
     flow = Flow.from_client_config(
         await _client_config(),
         scopes=GMAIL_SCOPES,
-        autogenerate_code_verifier=False,
+        code_verifier=code_verifier,
     )
     flow.redirect_uri = await _redirect_uri()
     url, _ = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
-        state=_make_state(user_id),
+        state=state,
     )
     return {"url": url}
 
@@ -195,12 +213,18 @@ async def google_oauth_callback(
     try:
         from google_auth_oauthlib.flow import Flow
 
-        user_id = _read_state(state)
+        user_id, nonce = _read_state(state)
+        oauth_state = await redis_memory_service.consume_state(user_id, f"oauth_google:{nonce}")
+        if not oauth_state or not hmac.compare_digest(str(oauth_state.get("nonce") or ""), nonce):
+            raise HTTPException(status_code=400, detail="OAuth state is invalid, expired, or was already used")
+        code_verifier = str(oauth_state.get("code_verifier") or "")
+        if len(code_verifier) < 43:
+            raise HTTPException(status_code=400, detail="OAuth PKCE verifier is missing or invalid")
         await plan_service.ensure_feature_available(user_id, "gmail_sends")
         flow = Flow.from_client_config(
             await _client_config(),
             scopes=GMAIL_SCOPES,
-            autogenerate_code_verifier=False,
+            code_verifier=code_verifier,
         )
         flow.redirect_uri = await _redirect_uri()
         flow.fetch_token(code=code)

@@ -3,6 +3,7 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { useToast } from '../hooks/use-toast';
 import { apiFetch } from '../lib/api';
+import { safeExternalUrl } from '../lib/safeExternalUrl';
 
 export function WebsiteOpener() {
   const [website, setWebsite] = useState('');
@@ -26,7 +27,9 @@ export function WebsiteOpener() {
       }
 
       if (data.status === 'success' && data.final_url) {
-        window.open(data.final_url, '_blank', 'noopener,noreferrer');
+        const safeUrl = safeExternalUrl(data.final_url);
+        if (!safeUrl) throw new Error('The returned website URL is not allowed');
+        window.open(safeUrl, '_blank', 'noopener,noreferrer');
         toast({
           title: 'Success',
           description: 'Opening website...',

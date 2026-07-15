@@ -57,7 +57,7 @@ class CallTaskScheduler:
     async def run_once(self) -> None:
         await self._recover_stale_claimed_tasks()
         try:
-            due_tasks = await supabase_service.get_due_pending_tasks(limit=25)
+            due_tasks = await supabase_service.get_due_backend_executable_tasks(limit=25)
         except Exception as e:
             if is_connectivity_error(e):
                 logger.warning("Skipping call scheduler tick because Supabase is unreachable")
@@ -68,10 +68,8 @@ class CallTaskScheduler:
             task_type = str(task.get("type") or "general")
             metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
             wants_call = call_reminder_service.task_wants_call(task)
-            # The backend should only run actions that can complete while the
-            # user's browser is closed. Plain reminders and browser-opening
-            # tasks are intentionally left for the frontend runner so it can
-            # mark them missed_offline when the PC/app was unavailable.
+            # Defense in depth: the query already selects only executable work.
+            # Plain reminders and browser-opening tasks remain frontend-owned.
             if task_type != "gmail" and not wants_call:
                 continue
             if task_type in {"youtube", "website"} and metadata.get("call_status") == "placed":
@@ -226,6 +224,24 @@ class CallTaskScheduler:
         except Exception as e:
             error_message = str(e)[:500]
             logger.error(f"Failed to place call reminder for task {task_id}: {error_message}")
+            failure_metadata = {
+                **active_metadata,
+                "execution_scope": "failed",
+                "execution_error": error_message,
+            }
+            if wants_call:
+                if active_metadata.get("call_status") == "placed":
+                    failure_metadata.update({"post_call_error": error_message})
+                else:
+                    failure_metadata.update({
+                        "call_status": "failed",
+                        "call_error": error_message,
+                    })
+            if task_type == "gmail":
+                failure_metadata.update({
+                    "gmail_status": "failed",
+                    "gmail_error": error_message,
+                })
             await supabase_service.update_task(
                 task_id,
                 user_id=user_id,
@@ -233,12 +249,7 @@ class CallTaskScheduler:
                 completed=False,
                 execution_message=error_message,
                 last_attempt_at=datetime.now(timezone.utc).isoformat(),
-                metadata={
-                    **active_metadata,
-                    "execution_scope": "failed",
-                    "call_status": "failed",
-                    "call_error": error_message,
-                },
+                metadata=failure_metadata,
             )
 
 

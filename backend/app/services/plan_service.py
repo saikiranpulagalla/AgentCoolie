@@ -148,7 +148,26 @@ class PlanService:
             return PLAN_COMPANION
 
         plan_id = str((row or {}).get("plan") or PLAN_COMPANION).strip().lower()
-        return plan_id if plan_id in PLAN_DEFINITIONS else PLAN_COMPANION
+        if plan_id != PLAN_AUTOPILOT:
+            return PLAN_COMPANION
+
+        billing_status = str((row or {}).get("billing_status") or "").strip().lower()
+        if billing_status not in {"active", "trialing"}:
+            return PLAN_COMPANION
+
+        period_end = (row or {}).get("current_period_end")
+        if period_end:
+            try:
+                expires_at = datetime.fromisoformat(str(period_end).replace("Z", "+00:00"))
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                if expires_at.astimezone(timezone.utc) <= datetime.now(timezone.utc):
+                    return PLAN_COMPANION
+            except ValueError:
+                logger.warning("Invalid plan expiry for %s; treating entitlement as Companion", user_id)
+                return PLAN_COMPANION
+
+        return PLAN_AUTOPILOT
 
     async def get_plan(self, user_id: str) -> dict[str, Any]:
         return deepcopy(PLAN_DEFINITIONS[await self.get_user_plan_id(user_id)])
@@ -213,7 +232,9 @@ class PlanService:
                     month_start=month_start,
                     month_limit=int(month_limit) if month_limit is not None else None,
                 )
-                if result and result.get("allowed") is False:
+                if not result:
+                    raise RuntimeError("Usage quota RPC returned no result")
+                if result.get("allowed") is False:
                     raise self._limit_error(
                         plan,
                         feature,
@@ -226,6 +247,9 @@ class PlanService:
             except Exception as e:
                 if is_connectivity_error(e):
                     raise
+                if not settings.is_local_runtime():
+                    logger.error("Atomic usage accounting failed for %s/%s: %s", user_id, feature, e)
+                    raise self._dependency_error("Usage accounting is unavailable. Please try again later.") from e
                 logger.warning(f"Atomic usage consume failed for {user_id}/{feature}; using local lock fallback: {e}")
 
             async with self._lock_for(user_id, feature):

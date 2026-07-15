@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Trash2, PlusCircle, Archive, Search, Brain, Radio, Bot } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiFetch, getApiBase } from "@/lib/api";
+import { safeExternalUrl } from "@/lib/safeExternalUrl";
 
 const WEBHOOK_URL = import.meta.env.VITE_CLIENT_WEBHOOK_URL || `${getApiBase()}/api/webhook/proxy`;
 
@@ -147,16 +148,18 @@ export default function Chat() {
     })();
 
     const openUrlInNewTab = (url: string, preOpenedWindow?: Window | null): "new-tab" | "unknown" => {
+      const safeUrl = safeExternalUrl(url);
+      if (!safeUrl) return "unknown";
       try {
         if (preOpenedWindow && !preOpenedWindow.closed) {
           try { preOpenedWindow.opener = null; } catch (e) { /* ignore opener hardening errors */ }
-          preOpenedWindow.location.href = url;
+          preOpenedWindow.location.href = safeUrl;
           try { preOpenedWindow.focus(); } catch (e) { /* ignore focus errors */ }
           return "new-tab";
         }
         // Passing "noopener" as a feature can make Chromium return null even
         // when the tab opens. Use a normal open, then harden opener manually.
-        const w = window.open(url, '_blank');
+        const w = window.open(safeUrl, '_blank');
         if (w) {
           try { w.opener = null; } catch (e) { /* ignore opener hardening errors */ }
           try { w.focus(); } catch (e) { /* ignore focus errors */ }

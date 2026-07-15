@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import hashlib
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -161,16 +162,80 @@ class RedisMemoryService:
         value: dict[str, Any],
         ttl_seconds: int = 900,
         conversation_id: str | None = None,
-    ) -> None:
+    ) -> bool:
         """Store short-lived structured tool state for a specific chat."""
         client = await self._get_client()
         if client is None:
-            return
+            return False
 
         try:
             await client.set(self._state_key(user_id, name, conversation_id), json.dumps(value), ex=ttl_seconds)
+            return True
         except Exception as e:
             logger.warning(f"Failed to write Redis tool state {name}: {e}")
+            return False
+
+    async def consume_state(
+        self,
+        user_id: str,
+        name: str,
+        conversation_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Atomically read and delete a one-time state value."""
+        client = await self._get_client()
+        if client is None:
+            return None
+
+        key = self._state_key(user_id, name, conversation_id)
+        try:
+            try:
+                raw = await client.execute_command("GETDEL", key)
+            except Exception:
+                # Redis versions before GETDEL still need an atomic consume.
+                raw = await client.eval(
+                    "local value = redis.call('GET', KEYS[1]); "
+                    "if value then redis.call('DEL', KEYS[1]); end; return value;",
+                    1,
+                    key,
+                )
+            if not raw:
+                return None
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else None
+        except Exception as e:
+            logger.warning(f"Failed to consume Redis tool state {name}: {e}")
+            return None
+
+    def _idempotency_key(self, identifier: str) -> str:
+        digest = hashlib.sha256(identifier.encode("utf-8", errors="ignore")).hexdigest()
+        return f"coolie:idempotency:{digest}"
+
+    async def reserve_idempotency_key(self, identifier: str, ttl_seconds: int) -> bool | None:
+        """Reserve an external event exactly once; None means Redis was unavailable."""
+        client = await self._get_client()
+        if client is None:
+            return None
+        try:
+            reserved = await client.set(
+                self._idempotency_key(identifier),
+                "1",
+                nx=True,
+                ex=max(60, int(ttl_seconds or 60)),
+            )
+            return bool(reserved)
+        except Exception as e:
+            logger.warning("Failed to reserve webhook idempotency key: %s", e)
+            return None
+
+    async def release_idempotency_key(self, identifier: str) -> None:
+        """Release a reservation after a retryable processing failure."""
+        client = await self._get_client()
+        if client is None:
+            return
+        try:
+            await client.delete(self._idempotency_key(identifier))
+        except Exception as e:
+            logger.warning("Failed to release webhook idempotency key: %s", e)
 
     async def delete_state(self, user_id: str, name: str, conversation_id: str | None = None) -> None:
         """Delete short-lived structured tool state for a specific chat."""

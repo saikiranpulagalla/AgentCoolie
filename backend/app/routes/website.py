@@ -5,12 +5,46 @@ Website opening routes for handling user requests to open websites.
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel
 from typing import Optional
+from urllib.parse import urlparse
+import ipaddress
 import logging
+import re
 
 from app.services import firebase_service, plan_service
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["website"])
+
+BLOCKED_HOSTS = {"localhost", "metadata.google.internal"}
+
+
+def _is_safe_public_host(hostname: str | None) -> bool:
+    if not hostname:
+        return False
+    host = hostname.strip().strip(".").lower()
+    if not host or host in BLOCKED_HOSTS or host.endswith(".localhost"):
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+        return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved)
+    except ValueError:
+        return bool(re.fullmatch(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}", host))
+
+
+def _safe_url(url: str) -> str | None:
+    parsed = urlparse(url.strip())
+    if parsed.scheme != "https":
+        if not (
+            settings.is_local_runtime()
+            and parsed.scheme == "http"
+            and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        ):
+            return None
+    if not _is_safe_public_host(parsed.hostname):
+        if not (settings.is_local_runtime() and parsed.hostname in {"localhost", "127.0.0.1", "::1"}):
+            return None
+    return parsed.geturl()
 
 
 def get_current_user(authorization: str = Header(None)) -> str:
@@ -70,20 +104,20 @@ async def open_website(
                 "opened_in_system_browser": False
             }
 
-        await plan_service.check_and_consume(
-            user_id,
-            "website_opens",
-            metadata={"source": "website_api"},
-        )
-        
         # Simple URL extraction - look for URLs in the query
-        import re
         url_pattern = r'https?://[^\s\)"\']+'
         urls = re.findall(url_pattern, query)
         
         if urls:
             # Found a full URL
-            final_url = urls[0]
+            final_url = _safe_url(urls[0])
+            if not final_url:
+                raise HTTPException(status_code=400, detail="That URL is not allowed.")
+            await plan_service.check_and_consume(
+                user_id,
+                "website_opens",
+                metadata={"source": "website_api", "mode": "url"},
+            )
             logger.info(f"Website endpoint: Found URL in query: {final_url}")
             return {
                 "status": "success",
@@ -103,6 +137,13 @@ async def open_website(
             if not domain.startswith('www.'):
                 domain = f"www.{domain}"
             final_url = f"https://{domain}"
+            if not _safe_url(final_url):
+                raise HTTPException(status_code=400, detail="That website is not allowed.")
+            await plan_service.check_and_consume(
+                user_id,
+                "website_opens",
+                metadata={"source": "website_api", "mode": "domain"},
+            )
             logger.info(f"Website endpoint: Detected domain: {final_url}")
             return {
                 "status": "success",
@@ -122,6 +163,13 @@ async def open_website(
         if candidates:
             site = candidates[-1]
             final_url = f"https://www.{site}.com"
+            if not _safe_url(final_url):
+                raise HTTPException(status_code=400, detail="That website is not allowed.")
+            await plan_service.check_and_consume(
+                user_id,
+                "website_opens",
+                metadata={"source": "website_api", "mode": "inferred"},
+            )
             logger.info(f"Website endpoint: Inferred site name: {final_url}")
             return {
                 "status": "success",

@@ -176,19 +176,29 @@ async def create_reminder(
             raw_email = str(request.get("user_email") or request.get("gmail_to") or request.get("to") or "").strip()
             if raw_email and not gmail_to:
                 raise HTTPException(status_code=400, detail="Invalid Gmail recipient email")
-            if gmail_to:
-                metadata["gmail_to"] = gmail_to
-                metadata["gmail_subject"] = request.get("subject") or "Message from AgentCoolie"
+            if not gmail_to:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Gmail tasks need a recipient. Create the email through chat if you want AgentCoolie to draft it first.",
+                )
+            gmail_body = str(request.get("body") or message).strip()
+            gmail_subject = str(request.get("subject") or "Message from AgentCoolie").strip()
+            if not gmail_body or len(gmail_body) > 10000 or len(gmail_subject) > 180:
+                raise HTTPException(status_code=400, detail="Gmail subject or body is invalid or too long")
+            metadata.update({
+                "gmail_action": "send",
+                "gmail_approved_at": datetime.now().astimezone().isoformat(),
+                "gmail_to": gmail_to,
+                "gmail_subject": gmail_subject,
+                "gmail_body": gmail_body,
+            })
         if notify_by_call:
             metadata["notify_by_call"] = True
-            call_phone = request.get("call_phone")
-            if call_phone:
-                from app.services.call_reminder_service import normalize_phone_number
-
-                normalized = normalize_phone_number(str(call_phone))
-                if not normalized:
-                    raise HTTPException(status_code=400, detail="Call phone must be in E.164 format, e.g. +919000000000")
-                metadata["call_phone"] = normalized
+            if str(request.get("call_phone") or "").strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Save the call phone number in Settings. Task-level call phone overrides are not allowed.",
+                )
 
         await plan_service.ensure_active_task_slot(user_id)
         if task_type == "gmail":
@@ -268,16 +278,12 @@ async def update_reminder(
             if not next_notify_by_call:
                 metadata.pop("call_quota_reserved", None)
         if "call_phone" in request:
-            from app.services.call_reminder_service import normalize_phone_number
-
-            call_phone = str(request.get("call_phone") or "").strip()
-            if call_phone:
-                normalized = normalize_phone_number(call_phone)
-                if not normalized:
-                    raise HTTPException(status_code=400, detail="Call phone must be in E.164 format, e.g. +919000000000")
-                metadata["call_phone"] = normalized
-            else:
-                metadata.pop("call_phone", None)
+            if str(request.get("call_phone") or "").strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Save the call phone number in Settings. Task-level call phone overrides are not allowed.",
+                )
+            metadata.pop("call_phone", None)
         updates["metadata"] = metadata
     if "message" in request:
         message = str(request.get("message") or "").strip()

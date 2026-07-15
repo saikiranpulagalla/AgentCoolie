@@ -16,23 +16,28 @@ from app.services.tool_audit_service import tool_audit_service
 
 logger = logging.getLogger(__name__)
 
+GMAIL_ACTIONS = frozenset({
+    "send", "list", "get", "listByLabel", "markRead", "markUnread",
+    "addLabel", "removeLabel", "delete", "reply", "search",
+})
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}")
+_MESSAGE_ID_RE = re.compile(r"[A-Za-z0-9_-]{6,256}")
+_LABEL_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,256}")
+
 
 class N8NService:
     def __init__(self) -> None:
         self.gmail_action_path = settings.N8N_GMAIL_ACTION_PATH
-        self.gmail_credentials_path = settings.N8N_GMAIL_CREDENTIALS_PATH
 
     async def _config(self) -> dict[str, str | None]:
         values = await runtime_config_service.get_secrets(
             [
                 "N8N_BASE_URL",
                 "N8N_GMAIL_ACTION_PATH",
-                "N8N_GMAIL_CREDENTIALS_PATH",
                 "N8N_TOOL_SECRET",
             ]
         )
         values["N8N_GMAIL_ACTION_PATH"] = values.get("N8N_GMAIL_ACTION_PATH") or self.gmail_action_path
-        values["N8N_GMAIL_CREDENTIALS_PATH"] = values.get("N8N_GMAIL_CREDENTIALS_PATH") or self.gmail_credentials_path
         return values
 
     async def is_configured(self) -> bool:
@@ -53,11 +58,11 @@ class N8NService:
                 "message": "n8n is not configured for this backend.",
             }
 
-        path = config.get(path) if path in {"N8N_GMAIL_ACTION_PATH", "N8N_GMAIL_CREDENTIALS_PATH"} else path
+        path = config.get(path) if path == "N8N_GMAIL_ACTION_PATH" else path
         url = self._url(base_url, path or "")
         headers = {}
         tool_secret = config.get("N8N_TOOL_SECRET")
-        if settings.ENV.lower() != "development" and not tool_secret:
+        if not settings.is_local_runtime() and not tool_secret:
             return {
                 "ok": False,
                 "status": 503,
@@ -134,18 +139,73 @@ class N8NService:
 
         return None, {}, "I can use Gmail for list, search, and send actions. Please specify what you want to do."
 
-    async def save_gmail_credentials(
-        self,
-        user_id: str,
-        credentials: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        return await self._post(
-            "N8N_GMAIL_CREDENTIALS_PATH",
-            {
-                "userId": user_id,
-                "credentials": credentials,
-            },
-        )
+    def _validate_gmail_action(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Reject malformed or unexpected n8n actions before they cross the tool boundary."""
+        if action not in GMAIL_ACTIONS:
+            raise ValueError("Unsupported Gmail action")
+
+        normalized = dict(payload or {})
+        try:
+            max_results = int(normalized.get("maxResults", 10))
+        except (TypeError, ValueError) as e:
+            raise ValueError("maxResults must be a number") from e
+        if action in {"list", "listByLabel", "search"}:
+            normalized["maxResults"] = max(1, min(max_results, 20))
+            query = str(normalized.get("query") or "").strip()
+            if len(query) > 500:
+                raise ValueError("Gmail search queries are limited to 500 characters")
+            normalized["query"] = query
+
+        if action == "send":
+            recipient = str(normalized.get("to") or normalized.get("recipient") or "").strip()
+            subject = str(normalized.get("subject") or "Message from AgentCoolie").strip()
+            body = str(normalized.get("body") or "").strip()
+            if not _EMAIL_RE.fullmatch(recipient):
+                raise ValueError("A valid recipient email is required")
+            if not body:
+                raise ValueError("Email body is required")
+            if len(subject) > 180 or len(body) > 10000:
+                raise ValueError("Email subject or body is too long")
+            return {"to": recipient, "subject": subject, "body": body}
+
+        if action in {"get", "markRead", "markUnread", "addLabel", "removeLabel", "delete"}:
+            message_id = str(normalized.get("messageId") or "").strip()
+            if not _MESSAGE_ID_RE.fullmatch(message_id):
+                raise ValueError("A valid Gmail message id is required")
+            normalized["messageId"] = message_id
+
+        if action in {"addLabel", "removeLabel"}:
+            label_ids = normalized.get("labelIds")
+            if not isinstance(label_ids, list) or not 1 <= len(label_ids) <= 10:
+                raise ValueError("Provide between one and ten Gmail label ids")
+            if not all(_LABEL_ID_RE.fullmatch(str(label_id or "")) for label_id in label_ids):
+                raise ValueError("One or more Gmail label ids are invalid")
+            normalized["labelIds"] = [str(label_id) for label_id in label_ids]
+
+        if action == "reply":
+            recipient = str(normalized.get("to") or "").strip()
+            thread_id = str(normalized.get("threadId") or "").strip()
+            body = str(normalized.get("body") or "").strip()
+            if not _EMAIL_RE.fullmatch(recipient) or not _MESSAGE_ID_RE.fullmatch(thread_id) or not body:
+                raise ValueError("Reply requires a valid recipient, thread id, and message body")
+            if len(body) > 10000:
+                raise ValueError("Reply body is too long")
+            normalized.update({"to": recipient, "threadId": thread_id, "body": body})
+
+        return normalized
+
+    def _audit_payload(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Keep audit usefulness without copying full private email bodies into logs."""
+        safe = {"action": action}
+        if payload.get("to"):
+            safe["to"] = str(payload["to"])
+        if payload.get("messageId"):
+            safe["message_id"] = str(payload["messageId"])
+        if payload.get("query"):
+            safe["query_length"] = len(str(payload["query"]))
+        if payload.get("body"):
+            safe["body_length"] = len(str(payload["body"]))
+        return safe
 
     async def run_gmail_action(
         self,
@@ -187,6 +247,19 @@ class N8NService:
                     "message": planner_message or "Please specify a Gmail action.",
                 }
 
+        try:
+            planned_payload = self._validate_gmail_action(str(action), planned_payload)
+        except ValueError as e:
+            await tool_audit_service.record(
+                user_id,
+                tool="gmail",
+                action=str(action),
+                stage="blocked",
+                status="invalid_payload",
+                metadata={"reason": str(e)},
+            )
+            return {"ok": False, "status": 400, "message": str(e)}
+
         feature = "gmail_reads"
         if action in {"send", "reply", "delete"}:
             feature = "gmail_sends"
@@ -204,7 +277,7 @@ class N8NService:
             action=action,
             stage="started",
             status="pending",
-            metadata={"feature": feature, "payload": planned_payload},
+            metadata={"feature": feature, **self._audit_payload(str(action), planned_payload)},
         )
         result = await self._post(
             "N8N_GMAIL_ACTION_PATH",
@@ -225,8 +298,8 @@ class N8NService:
             status="success" if result.get("ok") else "failed",
             metadata={
                 "provider_status": result.get("status"),
-                "body": result.get("body"),
                 "message": result.get("message"),
+                **self._audit_payload(str(action), planned_payload),
             },
         )
         return result

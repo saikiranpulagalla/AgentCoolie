@@ -4,16 +4,30 @@ from __future__ import annotations
 
 import logging
 import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 
-from app.services import call_reminder_service, firebase_service, n8n_service, plan_service, supabase_service
+from app.core.config import settings
+from app.services import call_reminder_service, firebase_service, plan_service, supabase_service
 from app.services.call_reminder_service import normalize_phone_number
 from app.services.supabase_service import is_connectivity_error
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["integrations"])
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except ValueError:
+        return None
 
 
 def get_current_user(authorization: str = Header(None)) -> str:
@@ -45,6 +59,19 @@ async def get_integrations_status(user_id: str = Depends(get_current_user)) -> d
         if is_connectivity_error(e):
             raise HTTPException(status_code=503, detail="Could not reach Supabase.")
         raise HTTPException(status_code=500, detail="Failed to fetch integration status")
+
+
+@router.delete("/integrations/gmail")
+async def disconnect_gmail(user_id: str = Depends(get_current_user)) -> dict[str, Any]:
+    """Remove the authenticated user's stored Gmail OAuth credentials."""
+    try:
+        deleted = await supabase_service.delete_credentials(user_id, "gmail")
+        return {"status": "success", "connected": False, "deleted": bool(deleted)}
+    except Exception as e:
+        logger.error(f"Failed to disconnect Gmail for {user_id}: {e}")
+        if is_connectivity_error(e):
+            raise HTTPException(status_code=503, detail="Could not reach Supabase.")
+        raise HTTPException(status_code=500, detail="Failed to disconnect Gmail")
 
 
 @router.get("/integrations/call-reminder")
@@ -141,7 +168,24 @@ async def save_whatsapp_phone(
                 "phone_number": normalized,
             }
 
+        now = datetime.now(timezone.utc)
+        if isinstance(existing_data, dict) and existing_data.get("phone_number") == normalized:
+            sent_at = _parse_iso_datetime(existing_data.get("verification_sent_at"))
+            resend_seconds = max(15, int(settings.WHATSAPP_VERIFICATION_RESEND_SECONDS or 60))
+            if sent_at and (now - sent_at).total_seconds() < resend_seconds:
+                return {
+                    "status": "success",
+                    "configured": True,
+                    "connected": False,
+                    "verification_required": True,
+                    "verification_code": existing_data.get("verification_code"),
+                    "verification_expires_at": existing_data.get("verification_expires_at"),
+                    "phone_number": normalized,
+                    "message": "A verification code was already generated recently. Send LINK followed by that code from WhatsApp.",
+                }
+
         verification_code = f"{secrets.randbelow(900000) + 100000}"
+        expires_at = now + timedelta(minutes=max(1, int(settings.WHATSAPP_VERIFICATION_TTL_MINUTES or 15)))
         await supabase_service.save_credentials(
             user_id,
             "whatsapp",
@@ -150,6 +194,8 @@ async def save_whatsapp_phone(
                 "provider": "twilio",
                 "verified": False,
                 "verification_code": verification_code,
+                "verification_sent_at": now.isoformat(),
+                "verification_expires_at": expires_at.isoformat(),
             },
         )
         return {
@@ -158,6 +204,7 @@ async def save_whatsapp_phone(
             "connected": False,
             "verification_required": True,
             "verification_code": verification_code,
+            "verification_expires_at": expires_at.isoformat(),
             "phone_number": normalized,
             "message": f"Send LINK {verification_code} from this WhatsApp number to finish linking.",
         }
@@ -168,65 +215,3 @@ async def save_whatsapp_phone(
         if is_connectivity_error(e):
             raise HTTPException(status_code=503, detail="Could not reach Supabase.")
         raise HTTPException(status_code=500, detail="Failed to save WhatsApp phone")
-
-
-@router.post("/external/save-gmail-credentials")
-async def save_gmail_credentials(
-    request: dict[str, Any],
-    user_id: str = Depends(get_current_user),
-) -> dict[str, str]:
-    try:
-        credentials = request.get("credentials")
-        if credentials is None:
-            await supabase_service.delete_credentials(user_id, "gmail")
-            return {"status": "success", "message": "Gmail disconnected"}
-
-        if not isinstance(credentials, dict):
-            raise HTTPException(status_code=400, detail="credentials must be an object or null")
-
-        await plan_service.ensure_feature_available(user_id, "gmail_sends")
-        await supabase_service.save_credentials(user_id, "gmail", credentials)
-        return {"status": "success", "message": "Gmail credentials saved"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to save Gmail credentials for {user_id}: {e}")
-        if is_connectivity_error(e):
-            raise HTTPException(status_code=503, detail="Could not reach Supabase.")
-        raise HTTPException(status_code=500, detail="Failed to save Gmail credentials")
-
-
-@router.post("/external/gmail-action")
-async def run_gmail_action(
-    request: dict[str, Any],
-    user_id: str = Depends(get_current_user),
-) -> dict[str, Any]:
-    try:
-        message = str(request.get("message") or request.get("query") or "").strip()
-        action = request.get("action")
-        payload = request.get("payload") if isinstance(request.get("payload"), dict) else {}
-        if not message and not action:
-            raise HTTPException(status_code=400, detail="message or action is required")
-
-        result = await n8n_service.run_gmail_action(
-            user_id=user_id,
-            message=message,
-            action=str(action) if action else None,
-            payload=payload,
-        )
-        if not result.get("ok"):
-            status_code = int(result.get("status") or 502)
-            detail = result.get("message") or result.get("body") or "Gmail workflow failed"
-            raise HTTPException(status_code=status_code if status_code < 600 else 502, detail=detail)
-
-        return {
-            "status": "success",
-            "result": result.get("body"),
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to run Gmail action for {user_id}: {e}")
-        if is_connectivity_error(e):
-            raise HTTPException(status_code=503, detail="Could not reach Supabase.")
-        raise HTTPException(status_code=500, detail="Failed to run Gmail action")

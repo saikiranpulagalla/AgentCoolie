@@ -39,8 +39,8 @@ class User(UserBase):
 # ============ Chat Models ============
 class ChatMessageRequest(BaseModel):
     """Chat message request."""
-    content: str
-    attachments: Optional[List[dict]] = None
+    content: str = Field(min_length=1, max_length=12000)
+    attachments: Optional[List[dict]] = Field(default=None, max_length=4)
     conversationId: Optional[str] = None
     conversation_id: Optional[str] = None
 
@@ -122,11 +122,18 @@ class ResponseLength(str, Enum):
     DETAILED = "detailed"
 
 
+class Formality(str, Enum):
+    """Supported response formality values shared with the preferences API."""
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
 class PersonalizationSettings(BaseModel):
     """Personalization settings."""
     tone: Tone = Tone.PROFESSIONAL
     response_length: ResponseLength = ResponseLength.MODERATE
-    formality: int = Field(default=5, ge=1, le=10)
+    formality: Formality = Formality.MEDIUM
     include_emojis: bool = False
 
 

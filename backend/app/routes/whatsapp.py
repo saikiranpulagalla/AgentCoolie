@@ -8,6 +8,7 @@ from app.models import WhatsappWebhookRequest
 from app.services import chat_workflow_service, supabase_service, firebase_service, plan_service
 from app.services.call_reminder_service import normalize_phone_number
 from app.services.runtime_config_service import runtime_config_service
+from app.services.redis_memory_service import redis_memory_service
 from app.services.supabase_service import is_connectivity_error
 from app.core.config import settings
 import asyncio
@@ -22,6 +23,18 @@ import requests
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/whatsapp", tags=["whatsapp"])
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except ValueError:
+        return None
 
 
 def get_current_user(authorization: str = Header(None)) -> str:
@@ -56,6 +69,11 @@ def _twiml_message(message: str) -> Response:
     safe = html.escape((message or "").strip()[:1500] or "AgentCoolie could not generate a reply.")
     xml = f'<?xml version="1.0" encoding="UTF-8"?><Response><Message>{safe}</Message></Response>'
     return Response(content=xml, media_type="application/xml")
+
+
+def _twiml_empty() -> Response:
+    """Acknowledge a duplicate provider retry without sending another message."""
+    return Response(content='<?xml version="1.0" encoding="UTF-8"?><Response/>', media_type="application/xml")
 
 
 def _validate_twilio_signature(url: str, form_data: dict[str, str], signature: str | None, auth_token: str | None) -> bool:
@@ -95,6 +113,22 @@ async def handle_twilio_whatsapp_webhook(request: Request) -> Response:
     if not message:
         return _twiml_message("Send a text message and I will help from WhatsApp.")
 
+    message_sid = str(form_data.get("MessageSid") or "").strip()
+    if not message_sid:
+        logger.warning("Rejected Twilio WhatsApp webhook without MessageSid")
+        raise HTTPException(status_code=400, detail="Missing Twilio MessageSid")
+    idempotency_id = f"twilio-whatsapp:{message_sid}"
+    reserved = await redis_memory_service.reserve_idempotency_key(
+        idempotency_id,
+        settings.WEBHOOK_IDEMPOTENCY_TTL_SECONDS,
+    )
+    if reserved is None:
+        logger.error("Cannot safely process Twilio WhatsApp webhook because Redis is unavailable")
+        raise HTTPException(status_code=503, detail="Webhook idempotency storage is unavailable")
+    if not reserved:
+        logger.info("Ignoring duplicate Twilio WhatsApp webhook %s", message_sid)
+        return _twiml_empty()
+
     try:
         credential = await supabase_service.find_credential_by_phone(from_number, "whatsapp")
         if not credential:
@@ -107,6 +141,11 @@ async def handle_twilio_whatsapp_webhook(request: Request) -> Response:
         credential_data = credential.get("data") if isinstance(credential.get("data"), dict) else {}
         if not credential_data.get("verified"):
             expected_code = str(credential_data.get("verification_code") or "").strip()
+            expires_at = _parse_iso_datetime(credential_data.get("verification_expires_at"))
+            if expires_at and datetime.now(timezone.utc) > expires_at:
+                return _twiml_message(
+                    "This WhatsApp verification code expired. Open AgentCoolie Settings and request a new code."
+                )
             code_match = re.search(r"\blink\s+(\d{6})\b", message, re.IGNORECASE)
             if expected_code and code_match and code_match.group(1) == expected_code:
                 updated_data = {
@@ -141,6 +180,7 @@ async def handle_twilio_whatsapp_webhook(request: Request) -> Response:
         return _twiml_message(result.get("response") or "Done.")
 
     except Exception as e:
+        await redis_memory_service.release_idempotency_key(idempotency_id)
         logger.exception(f"Twilio WhatsApp webhook failed for {from_number}: {e}")
         return _twiml_message("Something went wrong in AgentCoolie while handling your WhatsApp message.")
 
@@ -179,6 +219,11 @@ async def handle_webhook(
         Success response
     """
     try:
+        if settings.is_production():
+            raise HTTPException(
+                status_code=410,
+                detail="The generic WhatsApp webhook is disabled outside local development. Use the signed Twilio webhook endpoint.",
+            )
         if not settings.WHATSAPP_WEBHOOK_SECRET:
             raise HTTPException(status_code=503, detail="WhatsApp webhook secret not configured")
         if x_webhook_token != settings.WHATSAPP_WEBHOOK_SECRET:
@@ -189,10 +234,28 @@ async def handle_webhook(
 
         # Process each message
         for msg in request.messages:
+            idempotency_id: str | None = None
             try:
                 from_number = normalize_phone_number(_strip_whatsapp_prefix(str(msg.get("from") or "")))
                 message_text = msg.get("text", {}).get("body", "")
                 if not from_number or not message_text:
+                    continue
+
+                provider_message_id = str(
+                    msg.get("id") or msg.get("message_id") or msg.get("MessageSid") or ""
+                ).strip()
+                if not provider_message_id:
+                    logger.warning("Ignoring generic WhatsApp event without a provider message id")
+                    continue
+                idempotency_id = f"generic-whatsapp:{provider_message_id}"
+                reserved = await redis_memory_service.reserve_idempotency_key(
+                    idempotency_id,
+                    settings.WEBHOOK_IDEMPOTENCY_TTL_SECONDS,
+                )
+                if reserved is None:
+                    raise RuntimeError("Webhook idempotency storage is unavailable")
+                if not reserved:
+                    logger.info("Ignoring duplicate generic WhatsApp webhook %s", provider_message_id)
                     continue
 
                 credential = await supabase_service.find_credential_by_phone(from_number, "whatsapp")
@@ -236,6 +299,8 @@ async def handle_webhook(
                 logger.info(f"Processed WhatsApp message from {user_id}")
 
             except Exception as e:
+                if idempotency_id:
+                    await redis_memory_service.release_idempotency_key(idempotency_id)
                 logger.error(f"Failed to process WhatsApp message: {e}")
                 continue
 

@@ -38,11 +38,18 @@ app = FastAPI(
     title="AgentCoolie",
     description="Memory-aware AI workspace with multi-channel integration",
     version="2.0.0",
+    docs_url="/docs" if settings.api_docs_enabled() else None,
+    redoc_url="/redoc" if settings.api_docs_enabled() else None,
+    openapi_url="/openapi.json" if settings.api_docs_enabled() else None,
 )
 
 # Reject oversized request bodies before JSON/multipart parsers buffer them.
 max_upload_count = max(1, int(settings.MAX_ATTACHMENT_COUNT or 1))
-max_request_body_bytes = (int(settings.MAX_UPLOAD_BYTES or 0) * max_upload_count) + (1024 * 1024)
+# Chat attachments are JSON base64 strings, which are about 4/3 the original
+# file size. Leave a small allowance for JSON/form metadata.
+max_raw_upload_bytes = max(0, int(settings.MAX_UPLOAD_BYTES or 0))
+max_encoded_attachment_bytes = ((max_raw_upload_bytes + 2) // 3) * 4
+max_request_body_bytes = (max_encoded_attachment_bytes * max_upload_count) + (1024 * 1024)
 app.add_middleware(BodySizeLimitMiddleware, max_body_size=max_request_body_bytes)
 
 # Add CORS middleware
@@ -69,10 +76,9 @@ async def health_check() -> dict:
     }
     production_ready = checks["firebase"] and checks["supabase_configured"]
     return {
-        "status": "healthy" if settings.ENV == "development" or production_ready else "degraded",
-        "environment": settings.ENV,
+        "status": "healthy" if settings.is_local_runtime() or production_ready else "degraded",
         "version": "2.0.0",
-        "checks": checks,
+        **({"checks": checks} if settings.is_local_runtime() else {}),
     }
 
 
@@ -96,17 +102,20 @@ app.include_router(billing_router)
 @app.get("/")
 async def root() -> dict:
     """Root endpoint."""
-    return {
+    payload = {
         "message": "AgentCoolie API v2.0",
-        "docs": "/docs",
         "health": "/health",
     }
+    if settings.api_docs_enabled():
+        payload["docs"] = "/docs"
+    return payload
 
 
 # Startup event
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup."""
+    settings.validate_runtime_safety()
     logger.info("Starting AgentCoolie API...")
     logger.info(f"Environment: {settings.ENV}")
     logger.info(f"CORS Origins: {settings.CORS_ORIGINS}")

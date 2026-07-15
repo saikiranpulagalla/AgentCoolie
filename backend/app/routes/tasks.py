@@ -58,7 +58,10 @@ async def create_task(
             raise HTTPException(status_code=401, detail="Invalid token: missing uid")
         await plan_service.ensure_active_task_slot(user_id)
         if task_request.type.value == "gmail":
-            await plan_service.ensure_feature_available(user_id, "gmail_sends")
+            raise HTTPException(
+                status_code=400,
+                detail="Create scheduled Gmail sends through the chat confirmation flow so the exact recipient and content are approved.",
+            )
         if task_request.type.value == "whatsapp":
             await plan_service.ensure_feature_available(user_id, "whatsapp_messages")
         await plan_service.check_and_consume(
@@ -113,7 +116,10 @@ async def create_task_from_text(
             task_data = task_details.get("task", {})
             await plan_service.ensure_active_task_slot(user_id)
             if task_data.get("type") == "gmail":
-                await plan_service.ensure_feature_available(user_id, "gmail_sends")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Create scheduled Gmail sends through the chat confirmation flow so the exact recipient and content are approved.",
+                )
             if task_data.get("type") == "whatsapp":
                 await plan_service.ensure_feature_available(user_id, "whatsapp_messages")
             await plan_service.check_and_consume(
@@ -204,7 +210,10 @@ async def update_task(
         if "type" in update_data:
             update_data["type"] = update_data["type"].value
             if update_data["type"] == "gmail":
-                await plan_service.ensure_feature_available(user_id, "gmail_sends")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Changing a task into a Gmail action is not allowed. Create it through the chat confirmation flow.",
+                )
             if update_data["type"] == "whatsapp":
                 await plan_service.ensure_feature_available(user_id, "whatsapp_messages")
         if "priority" in update_data:

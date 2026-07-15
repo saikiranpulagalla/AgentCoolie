@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useNotification } from "@/contexts/NotificationContext";
 import { apiFetch } from "@/lib/api";
+import { safeExternalUrl } from "@/lib/safeExternalUrl";
 
 type ReminderRow = {
   id: string;
@@ -16,8 +17,10 @@ type ReminderRow = {
 const MISSED_OFFLINE_GRACE_MS = 120000;
 
 function openUrl(url: string): boolean {
+  const safeUrl = safeExternalUrl(url);
+  if (!safeUrl) return false;
   try {
-    const opened = window.open(url, "_blank");
+    const opened = window.open(safeUrl, "_blank");
     if (opened) {
       try {
         opened.opener = null;

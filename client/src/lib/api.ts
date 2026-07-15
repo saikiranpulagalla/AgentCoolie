@@ -9,7 +9,16 @@ export function getApiBase(): string {
   const envBase = (import.meta as any)?.env?.VITE_API_URL as string | undefined;
   // Ensure no trailing slash for consistency
   const base = envBase ? envBase.replace(/\/$/, '') : '';
-  return base || "http://localhost:8000"; // default to localhost:8000
+  if (!base) {
+    if (import.meta.env.PROD) {
+      throw new Error("VITE_API_URL must be configured for a production build.");
+    }
+    return "http://localhost:8000";
+  }
+  if (import.meta.env.PROD && !base.startsWith("https://")) {
+    throw new Error("VITE_API_URL must use HTTPS in a production build.");
+  }
+  return base;
 }
 
 export function apiUrl(path: string): string {
@@ -152,15 +161,6 @@ export async function sendWhatsappMessage(to: string, message: string) {
 
 export async function authorizeGmail() {
   const response = await apiFetch("/api/oauth/google/start");
-  if (!response.ok) throw new Error(`API error: ${response.statusText}`);
-  return response.json();
-}
-
-export async function runGmailAction(message: string, action?: string, payload?: Record<string, any>) {
-  const response = await apiFetch("/api/external/gmail-action", {
-    method: "POST",
-    body: JSON.stringify({ message, action, payload }),
-  });
   if (!response.ok) throw new Error(`API error: ${response.statusText}`);
   return response.json();
 }

@@ -4,7 +4,7 @@ Also serves as webhook proxy for chat messages.
 """
 
 from fastapi import APIRouter, HTTPException, status, Request, Depends, Header
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from app.services import (
     gemini_service,
@@ -97,7 +97,9 @@ def _max_request_body_bytes() -> int:
     if max_upload_bytes <= 0:
         return 0
     max_count = max(1, int(settings.MAX_ATTACHMENT_COUNT or 1))
-    return (max_upload_bytes * max_count) + (1024 * 1024)
+    # JSON base64 expands uploaded bytes by roughly one third.
+    encoded_per_attachment = ((max_upload_bytes + 2) // 3) * 4
+    return (encoded_per_attachment * max_count) + (1024 * 1024)
 
 
 def _enforce_request_content_length(request: Request) -> None:
@@ -116,6 +118,34 @@ def _enforce_request_content_length(request: Request) -> None:
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=f"Request body is too large. Maximum request size is {max_mb:.0f} MB.",
         )
+
+
+def _enforce_text_size(value: object, label: str = "Message") -> str:
+    text = str(value or "").strip()
+    limit = max(1, int(settings.MAX_CHAT_MESSAGE_CHARS or 1))
+    if len(text) > limit:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"{label} is too long. Maximum length is {limit} characters.",
+        )
+    return text
+
+
+def _bounded_attachment_context(items: list[str]) -> list[str]:
+    """Keep extracted document/transcript context within the model budget."""
+    limit = max(1, int(settings.MAX_ATTACHMENT_CONTEXT_CHARS or 1))
+    kept: list[str] = []
+    used = 0
+    for item in items:
+        text = str(item or "").strip()
+        if not text or used >= limit:
+            continue
+        remaining = limit - used
+        if len(text) > remaining:
+            text = text[:remaining].rstrip() + "\n[Attachment context truncated]"
+        kept.append(text)
+        used += len(text)
+    return kept
 
 
 def _attachment_provider_error(kind: str, error: Exception | None = None) -> str:
@@ -165,7 +195,7 @@ def get_current_user(authorization: str = Header(None)) -> str:
 
 class YouTubeRequest(BaseModel):
     """Request to detect and open YouTube videos."""
-    query: str
+    query: str = Field(min_length=1, max_length=1000)
 
 
 class YouTubeResponse(BaseModel):
@@ -178,7 +208,7 @@ class YouTubeResponse(BaseModel):
 
 class ChatWebhookRequest(BaseModel):
     """Chat webhook request format."""
-    message: str
+    message: str = Field(min_length=1, max_length=12000)
     userId: Optional[str] = None
     userName: Optional[str] = None
     conversationId: Optional[str] = None
@@ -203,7 +233,7 @@ async def detect_youtube_video(
         Response with video detection result and video info if found
     """
     try:
-        query = request.query.strip()
+        query = _enforce_text_size(request.query, "YouTube query")
         
         if not query:
             return {
@@ -322,16 +352,16 @@ async def webhook_proxy(
         if "application/json" in content_type:
             # JSON request
             data = await request.json()
-            message = data.get("message") or ""
-            user_name = data.get("userName", "Anonymous")
+            message = _enforce_text_size(data.get("message"), "Message")
+            user_name = _enforce_text_size(data.get("userName", "Anonymous"), "User name")[:120]
             conversation_id = data.get("conversationId") or data.get("conversation_id")
             attachments = data.get("attachments") or []
             files = []
         else:
             # FormData request
             form_data = await request.form()
-            message = form_data.get("message") or ""
-            user_name = form_data.get("userName", "Anonymous")
+            message = _enforce_text_size(form_data.get("message"), "Message")
+            user_name = _enforce_text_size(form_data.get("userName", "Anonymous"), "User name")[:120]
             conversation_id = form_data.get("conversationId") or form_data.get("conversation_id")
             files = form_data.getlist("files") if "files" in form_data else []
             attachments = []
@@ -464,7 +494,11 @@ async def webhook_proxy(
             _enforce_upload_size(str(pdf_attachment.get("name") or "PDF"), pdf_size)
             plan = await plan_service.consume_upload(user_id, "pdf", pdf_size)
             max_pages = int(plan.get("caps", {}).get("max_pdf_pages") or 25)
-            pdf_info = extract_pdf_text_with_metadata(pdf_base64, max_pages=max_pages)
+            pdf_info = await asyncio.to_thread(
+                extract_pdf_text_with_metadata,
+                pdf_base64,
+                max_pages=max_pages,
+            )
             pdf_text = str(pdf_info.get("text") or "")
             if pdf_text:
                 await redis_memory_service.set_state(
@@ -489,7 +523,11 @@ async def webhook_proxy(
             plan = await plan_service.consume_upload(user_id, "pdf", len(pdf_bytes))
             pdf_base64 = base64.b64encode(pdf_bytes).decode("ascii")
             max_pages = int(plan.get("caps", {}).get("max_pdf_pages") or 25)
-            pdf_info = extract_pdf_text_with_metadata(pdf_base64, max_pages=max_pages)
+            pdf_info = await asyncio.to_thread(
+                extract_pdf_text_with_metadata,
+                pdf_base64,
+                max_pages=max_pages,
+            )
             pdf_text = str(pdf_info.get("text") or "")
             if pdf_text:
                 await redis_memory_service.set_state(
@@ -551,6 +589,8 @@ async def webhook_proxy(
                 },
             }
 
+        attachment_context = _bounded_attachment_context(attachment_context)
+        message = _enforce_text_size(message, "Message")
         result = await chat_workflow_service.process(
             user_id=user_id,
             message=message,

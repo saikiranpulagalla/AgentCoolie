@@ -327,6 +327,8 @@ class TaskIntentService:
             if action == "send" and gmail_payload.get("to") and gmail_payload.get("body"):
                 metadata.update(
                     {
+                        "gmail_action": "send",
+                        "gmail_approved_at": datetime.now(timezone.utc).isoformat(),
                         "gmail_to": gmail_payload["to"],
                         "gmail_subject": gmail_payload.get("subject") or "Message from AgentCoolie",
                         "gmail_body": gmail_payload["body"],
@@ -469,6 +471,8 @@ User message: {message}"""
             if action == "send" and gmail_payload.get("to") and gmail_payload.get("body"):
                 metadata.update(
                     {
+                        "gmail_action": "send",
+                        "gmail_approved_at": datetime.now(timezone.utc).isoformat(),
                         "gmail_to": gmail_payload["to"],
                         "gmail_subject": gmail_payload.get("subject") or "Message from AgentCoolie",
                         "gmail_body": gmail_payload["body"],

@@ -19,13 +19,6 @@ export default function Settings() {
   const { user, getIdToken, signOut, loading: authLoading } = useAuth();
   const { toast } = useToast();
 
-  // Gmail & WhatsApp credentials state
-  const [gmailCredentials, setGmailCredentials] = useState({
-    gmailApiKey: "",
-    gmailClientId: "",
-    gmailClientSecret: "",
-    gmailRefreshToken: "",
-  });
   const [hasGmailCreds, setHasGmailCreds] = useState(false);
   const [callPhone, setCallPhone] = useState("");
   const [hasCallPhone, setHasCallPhone] = useState(false);
@@ -35,7 +28,6 @@ export default function Settings() {
   const [hasWhatsappPhone, setHasWhatsappPhone] = useState(false);
   const [whatsappVerificationCode, setWhatsappVerificationCode] = useState("");
   const [savingWhatsappPhone, setSavingWhatsappPhone] = useState(false);
-  const [savingCreds, setSavingCreds] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -96,13 +88,6 @@ export default function Settings() {
     } catch (e) {
       // ignore
     }
-  };
-
-  const ENDPOINTS = {
-    gmail: {
-      save: '/api/external/save-gmail-credentials',
-      action: '/api/external/gmail-action',
-    },
   };
 
   const getAuthHeaders = async (): Promise<Record<string,string>> => {
@@ -209,41 +194,6 @@ export default function Settings() {
       setHasGmailCreds(false);
     })();
   }, [authLoading, user?.uid]);
-
-  const handleSaveGmailCredentials = async (e?: any) => {
-    e?.preventDefault?.();
-    if (!requirePaidTool(gmailUnlocked, "Gmail")) return;
-    setSavingCreds(true);
-    try {
-      const uid = user?.uid;
-      if (!uid) throw new Error('No user id');
-  const headers = await getAuthHeaders();
-  const saveUrl = apiUrl(ENDPOINTS.gmail.save);
-  const resp = await fetch(saveUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify({ userId: uid, credentials: gmailCredentials }) });
-  const res = await resp.json().catch(() => ({ status: resp.ok ? 'success' : 'error', error: resp.ok ? undefined : 'Save failed' }));
-  if (res?.status === 'success') {
-        setHasGmailCreds(true);
-        saveCredentialFlag('gmail', uid);
-        toast({ title: 'Gmail saved', description: 'Gmail credentials saved successfully.' });
-        // Keep inputs as-is to reassure user; do not clear after save
-        // refresh server status to ensure persistence is reflected after save
-        try {
-          const headers = await getAuthHeaders();
-          const chk = await apiFetch('/api/integrations/status', { headers });
-          const payload = await chk.json().catch(() => ({}));
-          if (chk.ok && payload) {
-            setHasGmailCreds(!!payload.gmail);
-          }
-        } catch (_) {}
-      } else {
-        toast({ title: 'Failed', description: res?.error || 'Failed to save Gmail credentials', variant: 'destructive' });
-      }
-    } catch (err: any) {
-      toast({ title: 'Error', description: err?.message || String(err), variant: 'destructive' });
-    } finally {
-      setSavingCreds(false);
-    }
-  };
 
   useEffect(() => {
     (async () => {
@@ -700,8 +650,7 @@ export default function Settings() {
                     <Button variant="ghost" onClick={async () => {
                       try {
                         const headers = await getAuthHeaders();
-                        const resp = await apiFetch('/api/external/save-gmail-credentials', { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify({ credentials: null }) });
-                        // server returns 200 even on error payload; treat non-ok as error
+                        const resp = await apiFetch('/api/integrations/gmail', { method: 'DELETE', headers });
                         if (!resp.ok) throw new Error('Failed to disconnect');
                         setHasGmailCreds(false);
                         clearGmailCredentialFlags(user?.uid);

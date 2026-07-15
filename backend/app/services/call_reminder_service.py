@@ -164,10 +164,13 @@ class CallReminderService:
     async def resolve_task_phone(self, task: dict[str, Any]) -> str | None:
         metadata = _task_metadata(task)
         task_phone = normalize_phone_number(str(metadata.get("call_phone") or ""))
-        if task_phone:
-            return task_phone
         user_id = str(task.get("user_id") or "")
-        return await self.get_user_phone(user_id) if user_id else None
+        saved_phone = await self.get_user_phone(user_id) if user_id else None
+        if task_phone and task_phone != saved_phone:
+            raise RuntimeError(
+                "Call reminders can only use the phone number saved in your AgentCoolie Settings."
+            )
+        return saved_phone
 
     async def place_task_call(self, task: dict[str, Any]) -> dict[str, Any]:
         user_id = str(task.get("user_id") or "")
